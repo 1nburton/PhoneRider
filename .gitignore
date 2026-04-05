@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+.expo-shared/
+dist/
+ios/Pods/
+ios/build/
+android/.gradle/
+android/app/build/
+*.log
+.DS_Store
