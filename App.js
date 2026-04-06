@@ -123,6 +123,13 @@ function lineTypeConfig(typeId) {
   return LINE_TYPES.find((t) => t.id === typeId) || LINE_TYPES[0];
 }
 
+function getStartAnchor(lines) {
+  if (!lines.length) return null;
+  const firstLine = linePoints(lines[0]);
+  if (!firstLine.length) return null;
+  return firstLine[0];
+}
+
 function getLinesBounds(lines) {
   if (!lines.length) return null;
   let minX = Infinity;
@@ -175,6 +182,7 @@ function LineRider() {
   const [rider, setRider] = useState(null);
   const [trail, setTrail] = useState([]);
   const [crashed, setCrashed] = useState(false);
+  const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
   // Camera: panX/panY in screen-space, zoom multiplier
   const [cam, setCam] = useState({ x: 0, y: 0, zoom: 1 });
@@ -211,13 +219,13 @@ function LineRider() {
   const centerCameraAt = useCallback((wx, wy, zoom = camRef.current.zoom) => {
     const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
     const next = {
-      x: SW / 2 - wx * clampedZoom,
-      y: CANVAS_H / 2 - wy * clampedZoom,
+      x: canvasSize.width / 2 - wx * clampedZoom,
+      y: canvasSize.height / 2 - wy * clampedZoom,
       zoom: clampedZoom,
     };
     camRef.current = next;
     setCam(next);
-  }, []);
+  }, [canvasSize.height, canvasSize.width]);
 
   const fitTrackInView = useCallback(() => {
     const bounds = getLinesBounds(linesRef.current);
@@ -225,13 +233,13 @@ function LineRider() {
     const margin = 32;
     const width = Math.max(1, bounds.maxX - bounds.minX);
     const height = Math.max(1, bounds.maxY - bounds.minY);
-    const zoomX = (SW - margin * 2) / width;
-    const zoomY = (CANVAS_H - margin * 2) / height;
+    const zoomX = (canvasSize.width - margin * 2) / width;
+    const zoomY = (canvasSize.height - margin * 2) / height;
     const targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(zoomX, zoomY)));
     const centerX = (bounds.minX + bounds.maxX) / 2;
     const centerY = (bounds.minY + bounds.maxY) / 2;
     centerCameraAt(centerX, centerY, targetZoom);
-  }, [centerCameraAt]);
+  }, [canvasSize.height, canvasSize.width, centerCameraAt]);
 
   const placePresetAt = useCallback((wx, wy) => {
     const preset = PRESET_LIBRARY.find((p) => p.id === selectedPresetId);
@@ -345,9 +353,9 @@ function LineRider() {
   /* ══════════ PLAY / STOP ══════════ */
   const startPlay = useCallback(() => {
     if (lines.length === 0) return;
-    let sx = Infinity, sy = 0;
-    lines.forEach((l) => linePoints(l).forEach((p) => { if (p.x < sx) { sx = p.x; sy = p.y; } }));
-    riderRef.current = { x: sx, y: sy - RIDER_RADIUS - 2, vx: 1.5, vy: 0, onGround: false, angle: 0, crashed: false };
+    const start = getStartAnchor(lines);
+    if (!start) return;
+    riderRef.current = { x: start.x, y: start.y - RIDER_RADIUS - 2, vx: 1.5, vy: 0, onGround: false, angle: 0, crashed: false };
     trailRef.current = [];
     setCrashed(false);
     setPlaying(true);
@@ -397,15 +405,15 @@ function LineRider() {
         r.onGround = grounded;
         const speed = Math.hypot(r.vx, r.vy);
         if (speed > 20) { r.vx = (r.vx / speed) * 20; r.vy = (r.vy / speed) * 20; }
-        if (r.y > CANVAS_H / camRef.current.zoom + 800) { r.crashed = true; setCrashed(true); }
+        if (r.y > canvasSize.height / camRef.current.zoom + 800) { r.crashed = true; setCrashed(true); }
 
         trailRef.current.push({ x: r.x, y: r.y });
         if (trailRef.current.length > 200) trailRef.current.shift();
 
         // Camera follow
         const c = camRef.current;
-        const tx = SW / 2 - r.x * c.zoom;
-        const ty = CANVAS_H / 2 - r.y * c.zoom;
+        const tx = canvasSize.width / 2 - r.x * c.zoom;
+        const ty = canvasSize.height / 2 - r.y * c.zoom;
         c.x += (tx - c.x) * 0.06;
         c.y += (ty - c.y) * 0.06;
       }
@@ -429,11 +437,9 @@ function LineRider() {
   }, []);
 
   /* ══════════ DERIVED ══════════ */
-  let startX = null, startY = null;
-  if (lines.length > 0) {
-    startX = Infinity;
-    lines.forEach((l) => linePoints(l).forEach((p) => { if (p.x < startX) { startX = p.x; startY = p.y; } }));
-  }
+  const startAnchor = getStartAnchor(lines);
+  const startX = startAnchor ? startAnchor.x : null;
+  const startY = startAnchor ? startAnchor.y : null;
 
   const styleMeta = lineTypeConfig(lineStyle);
   const mapBounds = getLinesBounds(lines);
@@ -476,7 +482,7 @@ function LineRider() {
       {/* Header */}
       <View style={s.header}>
         <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-          <Text style={s.title}>⛷ LINE RIDER</Text>
+          <Text style={s.title}>⛷ iOS RIDER</Text>
           <Text style={s.subtitle}>NEON</Text>
         </View>
       </View>
@@ -563,8 +569,16 @@ function LineRider() {
 
       {/* Canvas */}
       <GestureDetector gesture={composedGesture}>
-        <View style={s.canvas}>
-          <Svg width={SW} height={CANVAS_H} style={StyleSheet.absoluteFill}>
+        <View
+          style={s.canvas}
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            if (width && height && (width !== canvasSize.width || height !== canvasSize.height)) {
+              setCanvasSize({ width, height });
+            }
+          }}
+        >
+          <Svg width={canvasSize.width} height={canvasSize.height} style={StyleSheet.absoluteFill}>
             <Defs>
               <LinearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
                 <Stop offset="0" stopColor="#0a0a1a" />
@@ -639,7 +653,7 @@ function LineRider() {
             <TouchableOpacity style={s.zoomBtn} onPress={() => {
               const c = camRef.current;
               const nz = Math.min(MAX_ZOOM, c.zoom * 1.3);
-              const cx = SW / 2, cy = CANVAS_H / 2;
+              const cx = canvasSize.width / 2, cy = canvasSize.height / 2;
               const r = nz / c.zoom;
               c.x = cx - r * (cx - c.x); c.y = cy - r * (cy - c.y); c.zoom = nz;
               setCam({ ...c });
@@ -650,7 +664,7 @@ function LineRider() {
             <TouchableOpacity style={s.zoomBtn} onPress={() => {
               const c = camRef.current;
               const nz = Math.max(MIN_ZOOM, c.zoom * 0.75);
-              const cx = SW / 2, cy = CANVAS_H / 2;
+              const cx = canvasSize.width / 2, cy = canvasSize.height / 2;
               const r = nz / c.zoom;
               c.x = cx - r * (cx - c.x); c.y = cy - r * (cy - c.y); c.zoom = nz;
               setCam({ ...c });
@@ -688,7 +702,7 @@ function LineRider() {
                   })}
                   {(() => {
                     const left = toMini((-cam.x) / cam.zoom, (-cam.y) / cam.zoom);
-                    const right = toMini((SW - cam.x) / cam.zoom, (CANVAS_H - cam.y) / cam.zoom);
+                    const right = toMini((canvasSize.width - cam.x) / cam.zoom, (canvasSize.height - cam.y) / cam.zoom);
                     const x = Math.min(left.x, right.x);
                     const y = Math.min(left.y, right.y);
                     const w = Math.max(4, Math.abs(right.x - left.x));
