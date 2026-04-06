@@ -333,8 +333,6 @@ function LineRider() {
   const [paymentLedger, setPaymentLedger] = useState({});
   const [storeReady, setStoreReady] = useState(false);
   const [storePrices, setStorePrices] = useState({});
-  const [playCameraMode, setPlayCameraMode] = useState('thirdPerson');
-  const [quickLookActive, setQuickLookActive] = useState(false);
   const [showCharacterShop, setShowCharacterShop] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
@@ -684,14 +682,12 @@ function LineRider() {
       riderTypeId: activeRiderId,
     };
     trailRef.current = [];
-    setQuickLookActive(false);
     setCrashed(false);
     setPlaying(true);
   }, [activeRiderId, lines]);
 
   const stopPlay = useCallback(() => {
     setPlaying(false);
-    setQuickLookActive(false);
     if (animRef.current) cancelAnimationFrame(animRef.current);
     riderRef.current = null;
     trailRef.current = [];
@@ -763,30 +759,10 @@ function LineRider() {
 
         // Camera follow
         const c = camRef.current;
-        const speedNow = Math.hypot(r.vx, r.vy);
-        const dirX = speedNow > 0.001 ? (r.vx / speedNow) : Math.cos(r.angle || 0);
-        const dirY = speedNow > 0.001 ? (r.vy / speedNow) : Math.sin(r.angle || 0);
-
-        const effectiveMode = quickLookActive
-          ? (playCameraMode === 'firstPerson' ? 'thirdPerson' : 'firstPerson')
-          : playCameraMode;
-
-        if (effectiveMode === 'firstPerson') {
-          const targetZoom = Math.min(MAX_ZOOM, Math.max(1.2, 1.45 + Math.min(0.45, speedNow * 0.02)));
-          const lookAhead = 58 + speedNow * 3.8;
-          const viewX = r.x + dirX * lookAhead;
-          const viewY = r.y + dirY * lookAhead * 0.55;
-          const tx = canvasSize.width / 2 - viewX * targetZoom;
-          const ty = canvasSize.height / 2 - viewY * targetZoom;
-          c.zoom += (targetZoom - c.zoom) * 0.08;
-          c.x += (tx - c.x) * 0.11;
-          c.y += (ty - c.y) * 0.11;
-        } else {
-          const tx = canvasSize.width / 2 - r.x * c.zoom;
-          const ty = canvasSize.height / 2 - r.y * c.zoom;
-          c.x += (tx - c.x) * 0.06;
-          c.y += (ty - c.y) * 0.06;
-        }
+        const tx = canvasSize.width / 2 - r.x * c.zoom;
+        const ty = canvasSize.height / 2 - r.y * c.zoom;
+        c.x += (tx - c.x) * 0.06;
+        c.y += (ty - c.y) * 0.06;
       }
 
       frameCountRef.current++;
@@ -800,7 +776,7 @@ function LineRider() {
     frameCountRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [activeRiderId, canvasSize.height, canvasSize.width, playCameraMode, playing, quickLookActive]);
+  }, [activeRiderId, canvasSize.height, canvasSize.width, playing]);
 
   const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };
@@ -857,9 +833,6 @@ function LineRider() {
     suspension: Math.max(0, Math.sin(motionPhase * 1.35)) * 1.4 * motionAmp * motionCfg.suspension,
     airTilt: rider?.onGround ? 0 : Math.sin(motionPhase * 0.8) * 1.2 * motionCfg.airTilt,
   };
-  const effectivePlayCameraMode = (playing && quickLookActive)
-    ? (playCameraMode === 'firstPerson' ? 'thirdPerson' : 'firstPerson')
-    : playCameraMode;
 
   return (
     <View style={s.container}>
@@ -890,16 +863,6 @@ function LineRider() {
         </View>
 
         <View style={[s.toolGroup, s.toolGroupRight]}>
-          {!playing && (
-            <TouchableOpacity
-              onPress={() => setPlayCameraMode((prev) => (prev === 'thirdPerson' ? 'firstPerson' : 'thirdPerson'))}
-              style={[s.viewModeBtn, playCameraMode === 'firstPerson' && s.viewModeBtnActive]}
-            >
-              <Text style={[s.viewModeText, playCameraMode === 'firstPerson' && s.viewModeTextActive]}>
-                {playCameraMode === 'firstPerson' ? '1ST VIEW' : '3RD VIEW'}
-              </Text>
-            </TouchableOpacity>
-          )}
           {!playing ? (
             <TouchableOpacity onPress={startPlay} disabled={!lines.length}
               style={[s.playBtn, !lines.length && s.playBtnOff]}>
@@ -1021,7 +984,7 @@ function LineRider() {
               )}
 
               {/* Rider */}
-              {rider && !rider.crashed && effectivePlayCameraMode !== 'firstPerson' && (
+              {rider && !rider.crashed && (
                 <G translateX={rider.x} translateY={rider.y} rotation={rAngle}>
                   {renderCharacterSprite(rider.riderTypeId || activeRiderId, currentRiderCfg, riderMotion)}
                 </G>
@@ -1133,27 +1096,8 @@ function LineRider() {
               <Text style={[s.hudText, { color: rider.onGround ? '#00ffc8' : '#ff6432' }]}>
                 {rider.onGround ? '● GND' : '○ AIR'}
               </Text>
-              <Text style={s.hudText}>{effectivePlayCameraMode === 'firstPerson' ? 'VIEW: 1ST' : 'VIEW: 3RD'}</Text>
               <Text style={s.hudText}>{zoomPct}%</Text>
             </View>
-          )}
-
-          {playing && effectivePlayCameraMode === 'firstPerson' && (
-            <View pointerEvents="none" style={s.firstPersonReticleWrap}>
-              <View style={s.firstPersonReticle} />
-            </View>
-          )}
-
-          {playing && rider && !rider.crashed && (
-            <TouchableOpacity
-              style={s.quickLookBtn}
-              onPressIn={() => setQuickLookActive(true)}
-              onPressOut={() => setQuickLookActive(false)}
-            >
-              <Text style={s.quickLookText}>
-                HOLD: {playCameraMode === 'firstPerson' ? 'PEEK 3RD' : 'PEEK 1ST'}
-              </Text>
-            </TouchableOpacity>
           )}
 
           {!playing && (
@@ -1250,11 +1194,6 @@ const s = StyleSheet.create({
   toolGroup: { flexDirection: 'row', gap: 5 },
   toolGroupLeft: { flexShrink: 1, flexWrap: 'wrap', rowGap: 4, marginRight: 6 },
   toolGroupRight: { flexShrink: 0 },
-  viewModeBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
-    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.04)' },
-  viewModeBtnActive: { borderColor: '#7ce2ff', backgroundColor: 'rgba(124,226,255,0.12)' },
-  viewModeText: { color: 'rgba(255,255,255,0.6)', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
-  viewModeTextActive: { color: '#dff7ff' },
   toolBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4,
     borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.04)', gap: 4 },
@@ -1348,13 +1287,8 @@ const s = StyleSheet.create({
   hud: { position: 'absolute', bottom: 10, left: 10, flexDirection: 'row', gap: 12 },
   hudText: { fontSize: 11, color: 'rgba(255,255,255,0.4)',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  quickLookBtn: { position: 'absolute', bottom: 10, right: 10, paddingHorizontal: 10, paddingVertical: 7,
-    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(124,226,255,0.45)', backgroundColor: 'rgba(11,19,39,0.92)' },
-  quickLookText: { color: '#dff7ff', fontSize: 10, fontWeight: '800', letterSpacing: 0.45 },
-  firstPersonReticleWrap: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
-  firstPersonReticle: { width: 8, height: 8, borderRadius: 4, borderWidth: 1,
-    borderColor: 'rgba(223,247,255,0.65)', backgroundColor: 'rgba(223,247,255,0.2)' },
-  charactersFab: { position: 'absolute', bottom: 14, left: 10, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+  charactersFab: { position: 'absolute', bottom: Platform.OS === 'ios' ? 34 : 18, left: 16, zIndex: 10,
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
     backgroundColor: 'rgba(16,28,58,0.94)', borderWidth: 1, borderColor: 'rgba(124,226,255,0.45)' },
   charactersFabText: { color: '#dff7ff', fontSize: 12, fontWeight: '800', letterSpacing: 0.4 },
 });
