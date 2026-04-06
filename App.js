@@ -747,7 +747,8 @@ function LineRider() {
       </View>
 
       {!playing && (
-        <View style={s.riderBarWrap}>
+        <View>
+          <View style={s.riderBarWrap}>
           <View style={s.riderStoreHeader}>
             <Text style={s.riderStoreTitle}>Riders</Text>
             <TouchableOpacity onPress={restoreRiderPurchases}>
@@ -777,6 +778,23 @@ function LineRider() {
               );
             })}
           </ScrollView>
+          </View>
+
+          {/* Debug Panel (Sandbox Testing) */}
+          <View style={s.debugPanel}>
+            <Text style={s.debugTitle}>IAP Debug</Text>
+            <Text style={s.debugText}>Store: {storeReady ? '✓ Ready' : '⊗ Offline'}</Text>
+            <Text style={s.debugText}>Active: {activeRiderCfg.name}</Text>
+            <Text style={s.debugText}>Owned: {ownedRiders.join(', ') || 'none'}</Text>
+            {Object.keys(paymentLedger).length > 0 && (
+              <Text style={s.debugText}>
+                Ledger: {Object.entries(paymentLedger)
+                  .slice(-2)
+                  .map(([id, tx]) => `${id}#${(tx.transactionId || 'pending').slice(-4)}`)
+                  .join(' | ')}
+              </Text>
+            )}
+          </View>
         </View>
       )}
 
@@ -1089,6 +1107,10 @@ const s = StyleSheet.create({
   riderNameActive: { color: '#00ffc8' },
   riderMeta: { color: 'rgba(255,255,255,0.38)', fontSize: 9, marginTop: 2 },
   riderPrice: { color: 'rgba(255,255,255,0.65)', fontSize: 10, marginTop: 3 },
+  debugPanel: { paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(10,10,26,0.8)',
+    borderBottomWidth: 1, borderBottomColor: 'rgba(255,165,0,0.2)' },
+  debugTitle: { color: '#ffb347', fontSize: 10, fontWeight: '900', letterSpacing: 0.5, marginBottom: 2 },
+  debugText: { color: 'rgba(255,200,150,0.75)', fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginVertical: 1 },
   lineTypeBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6,
     borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
   lineTypeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderRadius: 8,
