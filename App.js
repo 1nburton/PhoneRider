@@ -9,9 +9,10 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, Dimensions,
+  View, Text, TouchableOpacity, Dimensions, Alert, ScrollView,
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
+import * as RNIap from 'react-native-iap';
 import Svg, {
   Path, Circle, G, Line, Rect, Polygon,
   Defs, LinearGradient, Stop,
@@ -33,11 +34,57 @@ const MAX_ZOOM = 3;
 const TAP_TRACK_THRESHOLD = 28;
 const MINIMAP_W = 128;
 const MINIMAP_H = 92;
+const EDGE_PAN_MARGIN = 84;
+const EDGE_PAN_SPEED = 13;
+
+const RIDER_TYPES = [
+  {
+    id: 'classic',
+    name: 'Classic',
+    productId: null,
+    priceUsd: 0,
+    color: '#ff713a',
+    accent: '#ff3366',
+    launchSpeed: 1.5,
+    topSpeed: 20,
+  },
+  {
+    id: 'comet',
+    name: 'Comet',
+    productId: 'rider_comet_1usd',
+    priceUsd: 1,
+    color: '#54a6ff',
+    accent: '#00ffc8',
+    launchSpeed: 1.8,
+    topSpeed: 22,
+  },
+  {
+    id: 'blaze',
+    name: 'Blaze',
+    productId: 'rider_blaze_1usd',
+    priceUsd: 1,
+    color: '#ff8a2b',
+    accent: '#ffe24d',
+    launchSpeed: 2.0,
+    topSpeed: 23,
+  },
+  {
+    id: 'nova',
+    name: 'Nova',
+    productId: 'rider_nova_1usd',
+    priceUsd: 1,
+    color: '#b58cff',
+    accent: '#7ce2ff',
+    launchSpeed: 2.2,
+    topSpeed: 24,
+  },
+];
 
 const LINE_TYPES = [
-  { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1 },
-  { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.08 },
-  { id: 'brake', label: 'Brake', color: '#ffd64d', glow: 'rgba(255,214,77,0.24)', speedMult: 0.88 },
+  { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1, collidable: true },
+  { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.08, collidable: true },
+  { id: 'brake', label: 'Brake', color: '#ffd64d', glow: 'rgba(255,214,77,0.24)', speedMult: 0.88, collidable: true },
+  { id: 'scenery', label: 'Scenery', color: '#b58cff', glow: 'rgba(181,140,255,0.18)', speedMult: 1, collidable: false },
 ];
 
 const PRESET_LIBRARY = [
@@ -123,6 +170,15 @@ function lineTypeConfig(typeId) {
   return LINE_TYPES.find((t) => t.id === typeId) || LINE_TYPES[0];
 }
 
+function riderConfig(riderId) {
+  return RIDER_TYPES.find((r) => r.id === riderId) || RIDER_TYPES[0];
+}
+
+function riderIdFromProductId(productId) {
+  const hit = RIDER_TYPES.find((r) => r.productId === productId);
+  return hit ? hit.id : null;
+}
+
 function getStartAnchor(lines) {
   if (!lines.length) return null;
   const firstLine = linePoints(lines[0]);
@@ -182,6 +238,12 @@ function LineRider() {
   const [rider, setRider] = useState(null);
   const [trail, setTrail] = useState([]);
   const [crashed, setCrashed] = useState(false);
+  const [ownedRiders, setOwnedRiders] = useState(['classic']);
+  const [activeRiderId, setActiveRiderId] = useState('classic');
+  const [purchaseBusyId, setPurchaseBusyId] = useState(null);
+  const [paymentLedger, setPaymentLedger] = useState({});
+  const [storeReady, setStoreReady] = useState(false);
+  const [storePrices, setStorePrices] = useState({});
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
   // Camera: panX/panY in screen-space, zoom multiplier
@@ -260,6 +322,145 @@ function LineRider() {
     setLines((prev) => [...prev, { points: placed, type: lineStyle }]);
   }, [lineStyle, presetRotationDeg, presetScale, selectedPresetId]);
 
+  useEffect(() => {
+    let mounted = true;
+    let purchaseSub;
+    let errorSub;
+
+    const unlockFromPurchases = (purchases) => {
+      if (!mounted || !Array.isArray(purchases)) return;
+      const unlocked = purchases
+        .map((p) => riderIdFromProductId(p?.productId || p?.id))
+        .filter(Boolean);
+      if (!unlocked.length) return;
+      setOwnedRiders((prev) => Array.from(new Set([...prev, ...unlocked])));
+    };
+
+    const initIap = async () => {
+      const paidSkus = RIDER_TYPES.map((r) => r.productId).filter(Boolean);
+      try {
+        await RNIap.initConnection();
+        if (!mounted) return;
+        setStoreReady(true);
+
+        if (paidSkus.length) {
+          const products = await RNIap.fetchProducts({ skus: paidSkus, type: 'in-app' });
+          if (mounted) {
+            const nextPrices = {};
+            products.forEach((p) => {
+              const key = p.id || p.productId;
+              const price = p.displayPrice || p.localizedPrice || (typeof p.price === 'number' ? `$${p.price.toFixed(2)}` : '$1.00');
+              if (key) nextPrices[key] = price;
+            });
+            setStorePrices(nextPrices);
+          }
+        }
+
+        const existing = await RNIap.getAvailablePurchases({
+          alsoPublishToEventListenerIOS: false,
+          onlyIncludeActiveItemsIOS: true,
+        });
+        unlockFromPurchases(existing);
+      } catch (err) {
+        if (mounted) setStoreReady(false);
+      }
+
+      purchaseSub = RNIap.purchaseUpdatedListener(async (purchase) => {
+        const productId = purchase?.productId || purchase?.id;
+        const riderId = riderIdFromProductId(productId);
+        if (riderId) {
+          setOwnedRiders((prev) => Array.from(new Set([...prev, riderId])));
+          setActiveRiderId(riderId);
+          setPaymentLedger((prev) => ({
+            ...prev,
+            [riderId]: {
+              productId,
+              purchasedAt: new Date().toISOString(),
+              transactionId: purchase?.transactionId || purchase?.id,
+            },
+          }));
+          setPurchaseBusyId(null);
+        }
+        try {
+          await RNIap.finishTransaction({ purchase, isConsumable: false });
+        } catch (_) {
+          // no-op: listener still unlocks, transaction can be finalized later by restore flow
+        }
+      });
+
+      errorSub = RNIap.purchaseErrorListener((err) => {
+        setPurchaseBusyId(null);
+        Alert.alert('Purchase failed', err?.message || 'Could not complete purchase.');
+      });
+    };
+
+    initIap();
+    return () => {
+      mounted = false;
+      purchaseSub?.remove?.();
+      errorSub?.remove?.();
+      RNIap.endConnection().catch(() => {});
+    };
+  }, []);
+
+  const restoreRiderPurchases = useCallback(async () => {
+    try {
+      const purchases = await RNIap.getAvailablePurchases({
+        alsoPublishToEventListenerIOS: false,
+        onlyIncludeActiveItemsIOS: true,
+      });
+      const unlocked = purchases
+        .map((p) => riderIdFromProductId(p?.productId || p?.id))
+        .filter(Boolean);
+      if (!unlocked.length) {
+        Alert.alert('Restore Purchases', 'No prior rider purchases were found.');
+        return;
+      }
+      setOwnedRiders((prev) => Array.from(new Set([...prev, ...unlocked])));
+      Alert.alert('Restore Purchases', `Restored ${unlocked.length} rider purchase(s).`);
+    } catch (err) {
+      Alert.alert('Restore failed', err?.message || 'Unable to restore purchases right now.');
+    }
+  }, []);
+
+  const activateOrPurchaseRider = useCallback(async (riderId) => {
+    const cfg = riderConfig(riderId);
+    const alreadyOwned = ownedRiders.includes(riderId);
+    if (alreadyOwned || cfg.priceUsd <= 0) {
+      if (!alreadyOwned) setOwnedRiders((prev) => [...prev, riderId]);
+      setActiveRiderId(riderId);
+      return;
+    }
+    if (purchaseBusyId) return;
+    if (!storeReady || !cfg.productId) {
+      Alert.alert('Store unavailable', 'In-app purchases are not ready yet. Try again in a moment.');
+      return;
+    }
+    setPurchaseBusyId(riderId);
+    try {
+      await RNIap.requestPurchase({
+        request: {
+          ios: { sku: cfg.productId },
+          apple: { sku: cfg.productId },
+          android: { skus: [cfg.productId] },
+          google: { skus: [cfg.productId] },
+        },
+        type: 'in-app',
+      });
+    } catch (err) {
+      Alert.alert('Purchase failed', err?.message || 'Could not complete purchase.');
+      setPurchaseBusyId(null);
+    }
+  }, [ownedRiders, purchaseBusyId, storeReady]);
+
+  useEffect(() => {
+    if (!purchaseBusyId) return undefined;
+    const timeout = setTimeout(() => {
+      setPurchaseBusyId((prev) => (prev === purchaseBusyId ? null : prev));
+    }, 15000);
+    return () => clearTimeout(timeout);
+  }, [purchaseBusyId]);
+
   /* ══════════ GESTURES ══════════ */
 
   // 1-finger draw / erase
@@ -277,8 +478,32 @@ function LineRider() {
       }
     })
     .onUpdate((e) => {
-      const w = s2w(e.x, e.y);
       if (tool === 'preset') return;
+
+      // Autopan while drawing near screen edges.
+      const c = camRef.current;
+      let moved = false;
+      if (e.x > canvasSize.width - EDGE_PAN_MARGIN) {
+        const t = (e.x - (canvasSize.width - EDGE_PAN_MARGIN)) / EDGE_PAN_MARGIN;
+        c.x -= EDGE_PAN_SPEED * t;
+        moved = true;
+      } else if (e.x < EDGE_PAN_MARGIN) {
+        const t = (EDGE_PAN_MARGIN - e.x) / EDGE_PAN_MARGIN;
+        c.x += EDGE_PAN_SPEED * t;
+        moved = true;
+      }
+      if (e.y > canvasSize.height - EDGE_PAN_MARGIN) {
+        const t = (e.y - (canvasSize.height - EDGE_PAN_MARGIN)) / EDGE_PAN_MARGIN;
+        c.y -= EDGE_PAN_SPEED * t;
+        moved = true;
+      } else if (e.y < EDGE_PAN_MARGIN) {
+        const t = (EDGE_PAN_MARGIN - e.y) / EDGE_PAN_MARGIN;
+        c.y += EDGE_PAN_SPEED * t;
+        moved = true;
+      }
+      if (moved) setCam({ ...c });
+
+      const w = s2w(e.x, e.y);
       if (tool === 'erase') { eraseAt(w.x, w.y); return; }
       setCurrentStroke((prev) => {
         const last = prev[prev.length - 1];
@@ -355,11 +580,21 @@ function LineRider() {
     if (lines.length === 0) return;
     const start = getStartAnchor(lines);
     if (!start) return;
-    riderRef.current = { x: start.x, y: start.y - RIDER_RADIUS - 2, vx: 1.5, vy: 0, onGround: false, angle: 0, crashed: false };
+    const cfg = riderConfig(activeRiderId);
+    riderRef.current = {
+      x: start.x,
+      y: start.y - RIDER_RADIUS - 2,
+      vx: cfg.launchSpeed,
+      vy: 0,
+      onGround: false,
+      angle: 0,
+      crashed: false,
+      riderTypeId: activeRiderId,
+    };
     trailRef.current = [];
     setCrashed(false);
     setPlaying(true);
-  }, [lines]);
+  }, [activeRiderId, lines]);
 
   const stopPlay = useCallback(() => {
     setPlaying(false);
@@ -378,33 +613,55 @@ function LineRider() {
       const r = riderRef.current;
       if (!r) return;
       if (!r.crashed) {
-        r.vy += GRAVITY; r.x += r.vx; r.y += r.vy;
         let grounded = false;
-        for (const line of linesRef.current) {
-          const pts = linePoints(line);
-          const cfg = lineTypeConfig(lineType(line));
-          for (let i = 0; i < pts.length - 1; i++) {
-            const cp = closestPointOnSegment(r.x, r.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
-            const dist = Math.hypot(r.x - cp.x, r.y - cp.y);
-            if (dist < RIDER_RADIUS && dist > 0) {
-              const nx = (r.x - cp.x) / dist, ny = (r.y - cp.y) / dist;
-              r.x = cp.x + nx * RIDER_RADIUS; r.y = cp.y + ny * RIDER_RADIUS;
-              const dot = r.vx * nx + r.vy * ny;
-              if (dot < 0) {
-                r.vx -= (1 + BOUNCE) * dot * nx; r.vy -= (1 + BOUNCE) * dot * ny;
-                const tx = -ny, ty = nx, tDot = r.vx * tx + r.vy * ty;
-                r.vx = tx * tDot * FRICTION; r.vy = ty * tDot * FRICTION;
+        const speed = Math.hypot(r.vx, r.vy);
+        const steps = Math.min(12, Math.max(1, Math.ceil(speed / 2.5)));
+        const stepGravity = GRAVITY / steps;
+
+        for (let step = 0; step < steps; step++) {
+          r.vy += stepGravity;
+          r.x += r.vx / steps;
+          r.y += r.vy / steps;
+
+          for (const line of linesRef.current) {
+            const pts = linePoints(line);
+            const cfg = lineTypeConfig(lineType(line));
+            if (!cfg.collidable) continue;
+            for (let i = 0; i < pts.length - 1; i++) {
+              const cp = closestPointOnSegment(r.x, r.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+              const dist = Math.hypot(r.x - cp.x, r.y - cp.y);
+              if (dist <= RIDER_RADIUS) {
+                const denom = dist || 0.0001;
+                const nx = (r.x - cp.x) / denom;
+                const ny = (r.y - cp.y) / denom;
+                r.x = cp.x + nx * RIDER_RADIUS;
+                r.y = cp.y + ny * RIDER_RADIUS;
+                const dot = r.vx * nx + r.vy * ny;
+                if (dot < 0) {
+                  r.vx -= (1 + BOUNCE) * dot * nx;
+                  r.vy -= (1 + BOUNCE) * dot * ny;
+                  const tx = -ny;
+                  const ty = nx;
+                  const tDot = r.vx * tx + r.vy * ty;
+                  r.vx = tx * tDot * FRICTION;
+                  r.vy = ty * tDot * FRICTION;
+                }
+                r.vx *= cfg.speedMult;
+                r.vy *= cfg.speedMult;
+                r.angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
+                grounded = true;
               }
-              r.vx *= cfg.speedMult;
-              r.vy *= cfg.speedMult;
-              r.angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
-              grounded = true;
             }
           }
         }
+
         r.onGround = grounded;
-        const speed = Math.hypot(r.vx, r.vy);
-        if (speed > 20) { r.vx = (r.vx / speed) * 20; r.vy = (r.vy / speed) * 20; }
+        const activeCfg = riderConfig(r.riderTypeId || activeRiderId);
+        const postSpeed = Math.hypot(r.vx, r.vy);
+        if (postSpeed > activeCfg.topSpeed) {
+          r.vx = (r.vx / postSpeed) * activeCfg.topSpeed;
+          r.vy = (r.vy / postSpeed) * activeCfg.topSpeed;
+        }
         if (r.y > canvasSize.height / camRef.current.zoom + 800) { r.crashed = true; setCrashed(true); }
 
         trailRef.current.push({ x: r.x, y: r.y });
@@ -429,7 +686,7 @@ function LineRider() {
     frameCountRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [playing]);
+  }, [activeRiderId, playing]);
 
   const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };
@@ -471,6 +728,8 @@ function LineRider() {
     });
 
   const zoomPct = Math.round(cam.zoom * 100);
+  const activeRiderCfg = riderConfig(activeRiderId);
+  const currentRiderCfg = rider ? riderConfig(rider.riderTypeId || activeRiderId) : activeRiderCfg;
   const rAngle = rider
     ? (rider.onGround ? rider.angle : Math.atan2(rider.vy || 0, rider.vx || 0)) * (180 / Math.PI)
     : 0;
@@ -487,9 +746,43 @@ function LineRider() {
         </View>
       </View>
 
+      {!playing && (
+        <View style={s.riderBarWrap}>
+          <View style={s.riderStoreHeader}>
+            <Text style={s.riderStoreTitle}>Riders</Text>
+            <TouchableOpacity onPress={restoreRiderPurchases}>
+              <Text style={s.restoreLink}>Restore Purchases</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.riderBarContent}>
+            {RIDER_TYPES.map((rt) => {
+              const owned = ownedRiders.includes(rt.id);
+              const active = activeRiderId === rt.id;
+              return (
+                <TouchableOpacity
+                  key={rt.id}
+                  style={[s.riderCard, active && s.riderCardActive]}
+                  onPress={() => activateOrPurchaseRider(rt.id)}
+                  disabled={purchaseBusyId === rt.id}
+                >
+                  <View style={[s.riderSwatch, { backgroundColor: rt.color }]} />
+                  <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
+                  <Text style={s.riderMeta}>TOP {rt.topSpeed}</Text>
+                  <Text style={s.riderPrice}>
+                    {owned
+                      ? (active ? 'Selected' : 'Owned')
+                      : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Toolbar */}
       <View style={s.toolbar}>
-        <View style={s.toolGroup}>
+        <View style={[s.toolGroup, s.toolGroupLeft]}>
           {[
             { id: 'draw', icon: '✏️', label: 'Draw' },
             { id: 'erase', icon: '🧹', label: 'Erase' },
@@ -503,7 +796,7 @@ function LineRider() {
           ))}
         </View>
 
-        <View style={s.toolGroup}>
+        <View style={[s.toolGroup, s.toolGroupRight]}>
           {!playing ? (
             <TouchableOpacity onPress={startPlay} disabled={!lines.length}
               style={[s.playBtn, !lines.length && s.playBtnOff]}>
@@ -627,12 +920,12 @@ function LineRider() {
               {/* Rider */}
               {rider && !rider.crashed && (
                 <G translateX={rider.x} translateY={rider.y} rotation={rAngle}>
-                  <Polygon points="-10,2 12,2 14,-1 12,-4 -8,-4" fill="#ff6432" />
+                  <Polygon points="-10,2 12,2 14,-1 12,-4 -8,-4" fill={currentRiderCfg.color} />
                   <Line x1={-12} y1={RIDER_RADIUS - 2} x2={14} y2={RIDER_RADIUS - 2} stroke="#ffaa44" strokeWidth={2} />
                   <Circle cx={2} cy={-12} r={5} fill="white" />
                   <Line x1={2} y1={-7} x2={0} y2={-2} stroke="white" strokeWidth={2.5} />
                   <Line x1={-4} y1={-5} x2={6} y2={-5} stroke="white" strokeWidth={2.5} />
-                  <Line x1={5} y1={-10} x2={10} y2={-8} stroke="#ff3366" strokeWidth={2} />
+                  <Line x1={5} y1={-10} x2={10} y2={-8} stroke={currentRiderCfg.accent} strokeWidth={2} />
                 </G>
               )}
 
@@ -761,7 +1054,9 @@ const s = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 7,
     borderBottomWidth: 1, borderBottomColor: 'rgba(0,255,200,0.15)' },
   toolGroup: { flexDirection: 'row', gap: 5 },
-  toolBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5,
+  toolGroupLeft: { flexShrink: 1, flexWrap: 'wrap', rowGap: 4, marginRight: 6 },
+  toolGroupRight: { flexShrink: 0 },
+  toolBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4,
     borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.04)', gap: 4 },
   toolBtnActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.12)' },
@@ -780,6 +1075,20 @@ const s = StyleSheet.create({
   presetAdjustText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700' },
   presetValue: { color: 'rgba(255,255,255,0.65)', fontSize: 10, minWidth: 28, textAlign: 'center' },
   presetHint: { marginLeft: 'auto', color: 'rgba(255,255,255,0.3)', fontSize: 11 },
+  riderBarWrap: { paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
+  riderStoreHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 10, marginBottom: 4 },
+  riderStoreTitle: { color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '700', letterSpacing: 0.6 },
+  restoreLink: { color: '#7ce2ff', fontSize: 11, fontWeight: '700' },
+  riderBarContent: { paddingHorizontal: 10, gap: 8 },
+  riderCard: { minWidth: 88, borderRadius: 9, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 8, paddingVertical: 6 },
+  riderCardActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.12)' },
+  riderSwatch: { width: 16, height: 16, borderRadius: 8, marginBottom: 4 },
+  riderName: { color: 'rgba(255,255,255,0.78)', fontSize: 11, fontWeight: '700' },
+  riderNameActive: { color: '#00ffc8' },
+  riderMeta: { color: 'rgba(255,255,255,0.38)', fontSize: 9, marginTop: 2 },
+  riderPrice: { color: 'rgba(255,255,255,0.65)', fontSize: 10, marginTop: 3 },
   lineTypeBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6,
     borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
   lineTypeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderRadius: 8,
