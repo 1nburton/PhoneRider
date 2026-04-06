@@ -9,7 +9,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, Dimensions, Alert, ScrollView,
+  View, Text, TouchableOpacity, Dimensions, Alert, ScrollView, Modal,
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
 import * as RNIap from 'react-native-iap';
@@ -40,43 +40,55 @@ const EDGE_PAN_SPEED = 13;
 const RIDER_TYPES = [
   {
     id: 'classic',
-    name: 'Classic',
+    name: 'Bigfoot Skier',
     productId: null,
     priceUsd: 0,
-    color: '#ff713a',
-    accent: '#ff3366',
+    color: '#8b5e3c',
+    accent: '#ffd49b',
     launchSpeed: 1.5,
     topSpeed: 20,
+    icon: '🦶',
+    blurb: 'Raw power and heavy grip on steep lines.',
+    motion: { pace: 0.82, bob: 1.45, sway: 0.75, suspension: 0.55, airTilt: 0.6 },
   },
   {
     id: 'comet',
-    name: 'Comet',
+    name: 'Abominable Snowman',
     productId: 'rider_comet_1usd',
     priceUsd: 1,
-    color: '#54a6ff',
-    accent: '#00ffc8',
+    color: '#9ee8ff',
+    accent: '#ffffff',
     launchSpeed: 1.8,
     topSpeed: 22,
+    icon: '❄️',
+    blurb: 'Fast downhill charger with icy control.',
+    motion: { pace: 1.0, bob: 1.05, sway: 1.25, suspension: 0.35, airTilt: 1.0 },
   },
   {
     id: 'blaze',
-    name: 'Blaze',
+    name: 'Snowmobile Rider',
     productId: 'rider_blaze_1usd',
     priceUsd: 1,
-    color: '#ff8a2b',
-    accent: '#ffe24d',
+    color: '#ff6f3d',
+    accent: '#ffd94d',
     launchSpeed: 2.0,
     topSpeed: 23,
+    icon: '🏍️',
+    blurb: 'High top speed and aggressive acceleration.',
+    motion: { pace: 1.18, bob: 0.55, sway: 0.45, suspension: 1.75, airTilt: 0.5 },
   },
   {
     id: 'nova',
-    name: 'Nova',
+    name: 'Belly Slider',
     productId: 'rider_nova_1usd',
     priceUsd: 1,
-    color: '#b58cff',
+    color: '#f08cff',
     accent: '#7ce2ff',
     launchSpeed: 2.2,
     topSpeed: 24,
+    icon: '🛷',
+    blurb: 'Low-drag madness for wild speed runs.',
+    motion: { pace: 1.32, bob: 0.85, sway: 1.4, suspension: 0.25, airTilt: 1.45 },
   },
 ];
 
@@ -203,6 +215,83 @@ function getLinesBounds(lines) {
   return { minX, minY, maxX, maxY };
 }
 
+function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
+  const primary = cfg?.color || '#ff713a';
+  const accent = cfg?.accent || '#ffffff';
+  const bob = motion.bob || 0;
+  const sway = motion.sway || 0;
+  const suspension = motion.suspension || 0;
+  const airTilt = motion.airTilt || 0;
+
+  switch (riderTypeId) {
+    case 'classic':
+      return (
+        <G>
+          <Line x1={-14} y1={6 + bob * 0.4} x2={15} y2={6 - bob * 0.2} stroke="#d4b06f" strokeWidth={2.1} strokeLinecap="round" />
+          <Line x1={-13} y1={8 + bob * 0.6} x2={14} y2={8 - bob * 0.3} stroke="#b08a54" strokeWidth={1.7} strokeLinecap="round" />
+          <G translateY={-bob * 0.8}>
+            <Polygon points="-8,3 8,3 10,-3 -7,-4" fill={primary} />
+            <Circle cx={1} cy={-9} r={4.4} fill="#f1d1b4" />
+            <Path d="M-4,-8 C-2,-13 5,-14 7,-9" stroke="#5c3f2d" strokeWidth={2.2} fill="none" />
+            <Line x1={-4} y1={-1} x2={-10 + sway} y2={3} stroke={accent} strokeWidth={1.8} />
+            <Line x1={4} y1={-1} x2={10 - sway} y2={3} stroke={accent} strokeWidth={1.8} />
+          </G>
+        </G>
+      );
+    case 'comet':
+      return (
+        <G>
+          <Line x1={-13} y1={7 + bob * 0.4} x2={13} y2={7 - bob * 0.3} stroke="#d9f5ff" strokeWidth={2} strokeLinecap="round" />
+          <G translateY={-bob * 0.7}>
+            <Path d="M-10,5 C-9,-2 -4,-8 3,-8 C10,-8 12,-2 10,5 Z" fill={primary} />
+            <Circle cx={2} cy={-11} r={4.6} fill="#eefaff" />
+            <Path d="M-2,-15 C1,-18 5,-18 8,-15" stroke="#c8f1ff" strokeWidth={2} fill="none" />
+            <Line x1={-6} y1={-2} x2={-12 + sway * 0.6} y2={1} stroke="#ffffff" strokeWidth={1.8} />
+            <Line x1={8} y1={-2} x2={13 - sway * 0.6} y2={1} stroke="#ffffff" strokeWidth={1.8} />
+            <Circle cx={4} cy={-11} r={0.9} fill="#335" />
+          </G>
+        </G>
+      );
+    case 'blaze':
+      return (
+        <G>
+          <Line x1={-15} y1={7.5} x2={14} y2={7.5} stroke="#8a8f98" strokeWidth={2.6} strokeLinecap="round" />
+          <Rect x={-12.5} y={4.4} width={5.5} height={3.2} rx={1.2} fill="#4d525b" />
+          <Rect x={8.3} y={4.4} width={4.2} height={3.2} rx={1.1} fill="#4d525b" />
+          <G translateY={-(suspension + bob * 0.3)}>
+            <Path d="M-15,5 L-6,-2 L8,-2 L14,3 L10,6 L-13,6 Z" fill="#1f2430" />
+            <Path d="M-3,-6 L5,-6 L9,-2 L-2,-2 Z" fill={primary} />
+            <Circle cx={0} cy={-10.5} r={4.3} fill="#f2d5bd" />
+            <Path d="M-2,-13 C0,-15 3,-15 5,-13" stroke="#2f3238" strokeWidth={2} fill="none" />
+            <Line x1={4} y1={-7} x2={10 - sway * 0.4} y2={-4 + airTilt * 0.2} stroke={accent} strokeWidth={1.7} />
+          </G>
+        </G>
+      );
+    case 'nova':
+      return (
+        <G>
+          <Path d="M-15,8 C-10,4 2,3 14,6" stroke="#ffd26a" strokeWidth={2.2} fill="none" />
+          <G translateY={-bob * 0.55}>
+            <Path d="M-11,5 C-8,1 2,0 10,2 C9,5 3,7 -8,8 Z" fill={primary} />
+            <Circle cx={-10} cy={3} r={2.6} fill="#f1d4bf" />
+            <Path d="M-11,1 C-7,-1 -3,-1 0,1" stroke="#293043" strokeWidth={1.6} fill="none" />
+            <Line x1={-2} y1={4} x2={8 - sway * 0.5} y2={6} stroke={accent} strokeWidth={1.8} />
+            <Line x1={-5} y1={3} x2={5} y2={5 + airTilt * 0.15} stroke="#d8ecff" strokeWidth={1.3} />
+          </G>
+        </G>
+      );
+    default:
+      return (
+        <G>
+          <Polygon points="-10,2 12,2 14,-1 12,-4 -8,-4" fill={primary} />
+          <Line x1={-12} y1={RIDER_RADIUS - 2} x2={14} y2={RIDER_RADIUS - 2} stroke="#ffaa44" strokeWidth={2} />
+          <Circle cx={2} cy={-12} r={5} fill="white" />
+          <Line x1={2} y1={-7} x2={0} y2={-2} stroke="white" strokeWidth={2.5} />
+        </G>
+      );
+  }
+}
+
 function nearestPointOnTrack(lines, wx, wy) {
   let best = null;
   lines.forEach((line) => {
@@ -244,6 +333,9 @@ function LineRider() {
   const [paymentLedger, setPaymentLedger] = useState({});
   const [storeReady, setStoreReady] = useState(false);
   const [storePrices, setStorePrices] = useState({});
+  const [playCameraMode, setPlayCameraMode] = useState('thirdPerson');
+  const [quickLookActive, setQuickLookActive] = useState(false);
+  const [showCharacterShop, setShowCharacterShop] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
   // Camera: panX/panY in screen-space, zoom multiplier
@@ -592,12 +684,14 @@ function LineRider() {
       riderTypeId: activeRiderId,
     };
     trailRef.current = [];
+    setQuickLookActive(false);
     setCrashed(false);
     setPlaying(true);
   }, [activeRiderId, lines]);
 
   const stopPlay = useCallback(() => {
     setPlaying(false);
+    setQuickLookActive(false);
     if (animRef.current) cancelAnimationFrame(animRef.current);
     riderRef.current = null;
     trailRef.current = [];
@@ -669,10 +763,30 @@ function LineRider() {
 
         // Camera follow
         const c = camRef.current;
-        const tx = canvasSize.width / 2 - r.x * c.zoom;
-        const ty = canvasSize.height / 2 - r.y * c.zoom;
-        c.x += (tx - c.x) * 0.06;
-        c.y += (ty - c.y) * 0.06;
+        const speedNow = Math.hypot(r.vx, r.vy);
+        const dirX = speedNow > 0.001 ? (r.vx / speedNow) : Math.cos(r.angle || 0);
+        const dirY = speedNow > 0.001 ? (r.vy / speedNow) : Math.sin(r.angle || 0);
+
+        const effectiveMode = quickLookActive
+          ? (playCameraMode === 'firstPerson' ? 'thirdPerson' : 'firstPerson')
+          : playCameraMode;
+
+        if (effectiveMode === 'firstPerson') {
+          const targetZoom = Math.min(MAX_ZOOM, Math.max(1.2, 1.45 + Math.min(0.45, speedNow * 0.02)));
+          const lookAhead = 58 + speedNow * 3.8;
+          const viewX = r.x + dirX * lookAhead;
+          const viewY = r.y + dirY * lookAhead * 0.55;
+          const tx = canvasSize.width / 2 - viewX * targetZoom;
+          const ty = canvasSize.height / 2 - viewY * targetZoom;
+          c.zoom += (targetZoom - c.zoom) * 0.08;
+          c.x += (tx - c.x) * 0.11;
+          c.y += (ty - c.y) * 0.11;
+        } else {
+          const tx = canvasSize.width / 2 - r.x * c.zoom;
+          const ty = canvasSize.height / 2 - r.y * c.zoom;
+          c.x += (tx - c.x) * 0.06;
+          c.y += (ty - c.y) * 0.06;
+        }
       }
 
       frameCountRef.current++;
@@ -686,7 +800,7 @@ function LineRider() {
     frameCountRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [activeRiderId, playing]);
+  }, [activeRiderId, canvasSize.height, canvasSize.width, playCameraMode, playing, quickLookActive]);
 
   const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };
@@ -733,6 +847,19 @@ function LineRider() {
   const rAngle = rider
     ? (rider.onGround ? rider.angle : Math.atan2(rider.vy || 0, rider.vx || 0)) * (180 / Math.PI)
     : 0;
+  const riderSpeed = rider ? Math.hypot(rider.vx || 0, rider.vy || 0) : 0;
+  const motionCfg = currentRiderCfg.motion || { pace: 1, bob: 1, sway: 1, suspension: 1, airTilt: 1 };
+  const motionPhase = rider ? (rider.x * 0.12 + rider.y * 0.04) * motionCfg.pace : 0;
+  const motionAmp = Math.min(1, riderSpeed / 12) * (rider?.onGround ? 1 : 0.45);
+  const riderMotion = {
+    bob: Math.sin(motionPhase) * 1.2 * motionAmp * motionCfg.bob,
+    sway: Math.cos(motionPhase * 0.9) * 1.1 * motionAmp * motionCfg.sway,
+    suspension: Math.max(0, Math.sin(motionPhase * 1.35)) * 1.4 * motionAmp * motionCfg.suspension,
+    airTilt: rider?.onGround ? 0 : Math.sin(motionPhase * 0.8) * 1.2 * motionCfg.airTilt,
+  };
+  const effectivePlayCameraMode = (playing && quickLookActive)
+    ? (playCameraMode === 'firstPerson' ? 'thirdPerson' : 'firstPerson')
+    : playCameraMode;
 
   return (
     <View style={s.container}>
@@ -745,58 +872,6 @@ function LineRider() {
           <Text style={s.subtitle}>NEON</Text>
         </View>
       </View>
-
-      {!playing && (
-        <View>
-          <View style={s.riderBarWrap}>
-          <View style={s.riderStoreHeader}>
-            <Text style={s.riderStoreTitle}>Riders</Text>
-            <TouchableOpacity onPress={restoreRiderPurchases}>
-              <Text style={s.restoreLink}>Restore Purchases</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.riderBarContent}>
-            {RIDER_TYPES.map((rt) => {
-              const owned = ownedRiders.includes(rt.id);
-              const active = activeRiderId === rt.id;
-              return (
-                <TouchableOpacity
-                  key={rt.id}
-                  style={[s.riderCard, active && s.riderCardActive]}
-                  onPress={() => activateOrPurchaseRider(rt.id)}
-                  disabled={purchaseBusyId === rt.id}
-                >
-                  <View style={[s.riderSwatch, { backgroundColor: rt.color }]} />
-                  <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
-                  <Text style={s.riderMeta}>TOP {rt.topSpeed}</Text>
-                  <Text style={s.riderPrice}>
-                    {owned
-                      ? (active ? 'Selected' : 'Owned')
-                      : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-          </View>
-
-          {/* Debug Panel (Sandbox Testing) */}
-          <View style={s.debugPanel}>
-            <Text style={s.debugTitle}>IAP Debug</Text>
-            <Text style={s.debugText}>Store: {storeReady ? '✓ Ready' : '⊗ Offline'}</Text>
-            <Text style={s.debugText}>Active: {activeRiderCfg.name}</Text>
-            <Text style={s.debugText}>Owned: {ownedRiders.join(', ') || 'none'}</Text>
-            {Object.keys(paymentLedger).length > 0 && (
-              <Text style={s.debugText}>
-                Ledger: {Object.entries(paymentLedger)
-                  .slice(-2)
-                  .map(([id, tx]) => `${id}#${(tx.transactionId || 'pending').slice(-4)}`)
-                  .join(' | ')}
-              </Text>
-            )}
-          </View>
-        </View>
-      )}
 
       {/* Toolbar */}
       <View style={s.toolbar}>
@@ -815,6 +890,16 @@ function LineRider() {
         </View>
 
         <View style={[s.toolGroup, s.toolGroupRight]}>
+          {!playing && (
+            <TouchableOpacity
+              onPress={() => setPlayCameraMode((prev) => (prev === 'thirdPerson' ? 'firstPerson' : 'thirdPerson'))}
+              style={[s.viewModeBtn, playCameraMode === 'firstPerson' && s.viewModeBtnActive]}
+            >
+              <Text style={[s.viewModeText, playCameraMode === 'firstPerson' && s.viewModeTextActive]}>
+                {playCameraMode === 'firstPerson' ? '1ST VIEW' : '3RD VIEW'}
+              </Text>
+            </TouchableOpacity>
+          )}
           {!playing ? (
             <TouchableOpacity onPress={startPlay} disabled={!lines.length}
               style={[s.playBtn, !lines.length && s.playBtnOff]}>
@@ -936,14 +1021,9 @@ function LineRider() {
               )}
 
               {/* Rider */}
-              {rider && !rider.crashed && (
+              {rider && !rider.crashed && effectivePlayCameraMode !== 'firstPerson' && (
                 <G translateX={rider.x} translateY={rider.y} rotation={rAngle}>
-                  <Polygon points="-10,2 12,2 14,-1 12,-4 -8,-4" fill={currentRiderCfg.color} />
-                  <Line x1={-12} y1={RIDER_RADIUS - 2} x2={14} y2={RIDER_RADIUS - 2} stroke="#ffaa44" strokeWidth={2} />
-                  <Circle cx={2} cy={-12} r={5} fill="white" />
-                  <Line x1={2} y1={-7} x2={0} y2={-2} stroke="white" strokeWidth={2.5} />
-                  <Line x1={-4} y1={-5} x2={6} y2={-5} stroke="white" strokeWidth={2.5} />
-                  <Line x1={5} y1={-10} x2={10} y2={-8} stroke={currentRiderCfg.accent} strokeWidth={2} />
+                  {renderCharacterSprite(rider.riderTypeId || activeRiderId, currentRiderCfg, riderMotion)}
                 </G>
               )}
 
@@ -1053,11 +1133,107 @@ function LineRider() {
               <Text style={[s.hudText, { color: rider.onGround ? '#00ffc8' : '#ff6432' }]}>
                 {rider.onGround ? '● GND' : '○ AIR'}
               </Text>
+              <Text style={s.hudText}>{effectivePlayCameraMode === 'firstPerson' ? 'VIEW: 1ST' : 'VIEW: 3RD'}</Text>
               <Text style={s.hudText}>{zoomPct}%</Text>
             </View>
           )}
+
+          {playing && effectivePlayCameraMode === 'firstPerson' && (
+            <View pointerEvents="none" style={s.firstPersonReticleWrap}>
+              <View style={s.firstPersonReticle} />
+            </View>
+          )}
+
+          {playing && rider && !rider.crashed && (
+            <TouchableOpacity
+              style={s.quickLookBtn}
+              onPressIn={() => setQuickLookActive(true)}
+              onPressOut={() => setQuickLookActive(false)}
+            >
+              <Text style={s.quickLookText}>
+                HOLD: {playCameraMode === 'firstPerson' ? 'PEEK 3RD' : 'PEEK 1ST'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {!playing && (
+            <TouchableOpacity
+              style={s.charactersFab}
+              onPress={() => setShowCharacterShop(true)}
+            >
+              <Text style={s.charactersFabText}>Characters</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </GestureDetector>
+
+      <Modal
+        visible={showCharacterShop}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowCharacterShop(false)}
+      >
+        <View style={s.shopBackdrop}>
+          <View style={s.shopSheet}>
+            <View style={s.shopHeader}>
+              <View>
+                <Text style={s.shopTitle}>Character Shop</Text>
+                <Text style={s.shopSubtitle}>Choose who rides next</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowCharacterShop(false)} style={s.shopCloseBtn}>
+                <Text style={s.shopCloseText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity onPress={restoreRiderPurchases}>
+              <Text style={s.restoreLink}>Restore Purchases</Text>
+            </TouchableOpacity>
+
+            <ScrollView contentContainerStyle={s.shopList}>
+              {RIDER_TYPES.map((rt) => {
+                const owned = ownedRiders.includes(rt.id);
+                const active = activeRiderId === rt.id;
+                return (
+                  <TouchableOpacity
+                    key={rt.id}
+                    style={[s.riderCard, s.shopCard, active && s.riderCardActive]}
+                    onPress={() => activateOrPurchaseRider(rt.id)}
+                    disabled={purchaseBusyId === rt.id}
+                  >
+                    <View style={s.shopCardTop}>
+                      <Text style={s.shopIcon}>{rt.icon || '⛷'}</Text>
+                      <View style={[s.riderSwatch, { backgroundColor: rt.color }]} />
+                    </View>
+                    <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
+                    <Text style={s.shopBlurb}>{rt.blurb}</Text>
+                    <Text style={s.riderMeta}>TOP {rt.topSpeed} • LAUNCH {rt.launchSpeed.toFixed(1)}</Text>
+                    <Text style={s.riderPrice}>
+                      {owned
+                        ? (active ? 'Selected' : 'Owned')
+                        : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <View style={s.debugPanel}>
+              <Text style={s.debugTitle}>IAP Debug</Text>
+              <Text style={s.debugText}>Store: {storeReady ? '✓ Ready' : '⊗ Offline'}</Text>
+              <Text style={s.debugText}>Active: {activeRiderCfg.name}</Text>
+              <Text style={s.debugText}>Owned: {ownedRiders.join(', ') || 'none'}</Text>
+              {Object.keys(paymentLedger).length > 0 && (
+                <Text style={s.debugText}>
+                  Ledger: {Object.entries(paymentLedger)
+                    .slice(-2)
+                    .map(([id, tx]) => `${id}#${(tx.transactionId || 'pending').slice(-4)}`)
+                    .join(' | ')}
+                </Text>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1074,6 +1250,11 @@ const s = StyleSheet.create({
   toolGroup: { flexDirection: 'row', gap: 5 },
   toolGroupLeft: { flexShrink: 1, flexWrap: 'wrap', rowGap: 4, marginRight: 6 },
   toolGroupRight: { flexShrink: 0 },
+  viewModeBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.04)' },
+  viewModeBtnActive: { borderColor: '#7ce2ff', backgroundColor: 'rgba(124,226,255,0.12)' },
+  viewModeText: { color: 'rgba(255,255,255,0.6)', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  viewModeTextActive: { color: '#dff7ff' },
   toolBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4,
     borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.04)', gap: 4 },
@@ -1093,14 +1274,23 @@ const s = StyleSheet.create({
   presetAdjustText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700' },
   presetValue: { color: 'rgba(255,255,255,0.65)', fontSize: 10, minWidth: 28, textAlign: 'center' },
   presetHint: { marginLeft: 'auto', color: 'rgba(255,255,255,0.3)', fontSize: 11 },
-  riderBarWrap: { paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
-  riderStoreHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 10, marginBottom: 4 },
-  riderStoreTitle: { color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '700', letterSpacing: 0.6 },
+  shopBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(4,6,14,0.75)', justifyContent: 'flex-end' },
+  shopSheet: { backgroundColor: '#101626', borderTopLeftRadius: 18, borderTopRightRadius: 18,
+    borderWidth: 1, borderColor: 'rgba(124,226,255,0.2)', paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12,
+    maxHeight: '82%' },
+  shopHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  shopTitle: { color: '#dff7ff', fontSize: 16, fontWeight: '900', letterSpacing: 0.5 },
+  shopSubtitle: { color: 'rgba(223,247,255,0.55)', fontSize: 11, marginTop: 2 },
+  shopCloseBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.07)' },
+  shopCloseText: { color: '#dff7ff', fontSize: 12, fontWeight: '800' },
+  shopList: { gap: 8, paddingVertical: 8 },
   restoreLink: { color: '#7ce2ff', fontSize: 11, fontWeight: '700' },
-  riderBarContent: { paddingHorizontal: 10, gap: 8 },
   riderCard: { minWidth: 88, borderRadius: 9, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
     backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 8, paddingVertical: 6 },
+  shopCard: { minWidth: undefined },
+  shopCardTop: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
+  shopIcon: { fontSize: 18 },
+  shopBlurb: { color: 'rgba(255,255,255,0.55)', fontSize: 10, marginTop: 2 },
   riderCardActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.12)' },
   riderSwatch: { width: 16, height: 16, borderRadius: 8, marginBottom: 4 },
   riderName: { color: 'rgba(255,255,255,0.78)', fontSize: 11, fontWeight: '700' },
@@ -1158,4 +1348,13 @@ const s = StyleSheet.create({
   hud: { position: 'absolute', bottom: 10, left: 10, flexDirection: 'row', gap: 12 },
   hudText: { fontSize: 11, color: 'rgba(255,255,255,0.4)',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  quickLookBtn: { position: 'absolute', bottom: 10, right: 10, paddingHorizontal: 10, paddingVertical: 7,
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(124,226,255,0.45)', backgroundColor: 'rgba(11,19,39,0.92)' },
+  quickLookText: { color: '#dff7ff', fontSize: 10, fontWeight: '800', letterSpacing: 0.45 },
+  firstPersonReticleWrap: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
+  firstPersonReticle: { width: 8, height: 8, borderRadius: 4, borderWidth: 1,
+    borderColor: 'rgba(223,247,255,0.65)', backgroundColor: 'rgba(223,247,255,0.2)' },
+  charactersFab: { position: 'absolute', bottom: 14, left: 10, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+    backgroundColor: 'rgba(16,28,58,0.94)', borderWidth: 1, borderColor: 'rgba(124,226,255,0.45)' },
+  charactersFabText: { color: '#dff7ff', fontSize: 12, fontWeight: '800', letterSpacing: 0.4 },
 });
