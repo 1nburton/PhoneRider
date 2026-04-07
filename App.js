@@ -1239,7 +1239,6 @@ function LineRider() {
               <Text style={[s.lineTypeText, lineStyle === lt.id && s.lineTypeTextActive]}>{lt.label}</Text>
             </TouchableOpacity>
           ))}
-          <Text style={s.lineTypeHint}>{styleMeta.label} line selected</Text>
         </View>
       )}
 
@@ -1319,44 +1318,44 @@ function LineRider() {
             </G>
           </Svg>
 
-          {/* Zoom controls overlay */}
-          <View style={s.zoomBar}>
-            {!playing && (
-              <>
-                <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowSaveSlots(true)}>
-                  <Text style={s.zoomBtnTextSmall}>SAVES</Text>
-                </TouchableOpacity>
-                <View style={s.zoomDivider} />
-              </>
-            )}
-            <TouchableOpacity style={s.zoomBtn} onPress={() => {
-              const c = camRef.current;
-              const nz = Math.min(MAX_ZOOM, c.zoom * 1.3);
-              const cx = canvasSize.width / 2, cy = canvasSize.height / 2;
-              const r = nz / c.zoom;
-              c.x = cx - r * (cx - c.x); c.y = cy - r * (cy - c.y); c.zoom = nz;
-              setCam({ ...c });
-            }}>
-              <Text style={s.zoomBtnText}>+</Text>
-            </TouchableOpacity>
-            <Text style={s.zoomPct}>{zoomPct}%</Text>
-            <TouchableOpacity style={s.zoomBtn} onPress={() => {
-              const c = camRef.current;
-              const nz = Math.max(MIN_ZOOM, c.zoom * 0.75);
-              const cx = canvasSize.width / 2, cy = canvasSize.height / 2;
-              const r = nz / c.zoom;
-              c.x = cx - r * (cx - c.x); c.y = cy - r * (cy - c.y); c.zoom = nz;
-              setCam({ ...c });
-            }}>
-              <Text style={s.zoomBtnText}>−</Text>
-            </TouchableOpacity>
-            <View style={s.zoomDivider} />
-            <TouchableOpacity style={s.zoomBtn} onPress={resetView}>
-              <Text style={s.zoomBtnText}>⟳</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.zoomBtn} onPress={fitTrackInView} disabled={!lines.length}>
-              <Text style={[s.zoomBtnText, !lines.length && s.zoomBtnTextDisabled]}>□</Text>
-            </TouchableOpacity>
+          {/* Top controls overlay */}
+          <View style={s.topCanvasRow}>
+            {!playing ? (
+              <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowSaveSlots(true)}>
+                <Text style={s.zoomBtnTextSmall}>SAVES</Text>
+              </TouchableOpacity>
+            ) : <View />}
+
+            <View style={s.zoomBar}>
+              <TouchableOpacity style={s.zoomBtn} onPress={() => {
+                const c = camRef.current;
+                const nz = Math.min(MAX_ZOOM, c.zoom * 1.3);
+                const cx = canvasSize.width / 2, cy = canvasSize.height / 2;
+                const r = nz / c.zoom;
+                c.x = cx - r * (cx - c.x); c.y = cy - r * (cy - c.y); c.zoom = nz;
+                setCam({ ...c });
+              }}>
+                <Text style={s.zoomBtnText}>+</Text>
+              </TouchableOpacity>
+              <Text style={s.zoomPct}>{zoomPct}%</Text>
+              <TouchableOpacity style={s.zoomBtn} onPress={() => {
+                const c = camRef.current;
+                const nz = Math.max(MIN_ZOOM, c.zoom * 0.75);
+                const cx = canvasSize.width / 2, cy = canvasSize.height / 2;
+                const r = nz / c.zoom;
+                c.x = cx - r * (cx - c.x); c.y = cy - r * (cy - c.y); c.zoom = nz;
+                setCam({ ...c });
+              }}>
+                <Text style={s.zoomBtnText}>−</Text>
+              </TouchableOpacity>
+              <View style={s.zoomDivider} />
+              <TouchableOpacity style={s.zoomBtn} onPress={resetView}>
+                <Text style={s.zoomBtnText}>⟳</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.zoomBtn} onPress={fitTrackInView} disabled={!lines.length}>
+                <Text style={[s.zoomBtnText, !lines.length && s.zoomBtnTextDisabled]}>□</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {minimap && (
@@ -1654,7 +1653,6 @@ const s = StyleSheet.create({
   lineTypeSwatch: { width: 10, height: 10, borderRadius: 5 },
   lineTypeText: { color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '700' },
   lineTypeTextActive: { color: '#ffffff' },
-  lineTypeHint: { marginLeft: 'auto', color: 'rgba(255,255,255,0.33)', fontSize: 11 },
   playBtn: { paddingHorizontal: 16, paddingVertical: 5, borderRadius: 8, backgroundColor: '#00ffc8' },
   playBtnOff: { backgroundColor: 'rgba(255,255,255,0.08)' },
   playText: { color: '#0a0a1a', fontWeight: '800', fontSize: 12, letterSpacing: 1 },
@@ -1665,7 +1663,9 @@ const s = StyleSheet.create({
     borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.04)' },
   canvas: { flex: 1, backgroundColor: '#0a0a1a' },
   // Zoom
-  zoomBar: { position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center',
+  topCanvasRow: { position: 'absolute', top: 10, left: 10, right: 10, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between' },
+  zoomBar: { flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(10,10,26,0.9)', borderWidth: 1, borderColor: 'rgba(0,255,200,0.15)',
     borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3, gap: 5 },
   zoomBtn: { width: 28, height: 28, borderRadius: 6, borderWidth: 1,
