@@ -38,6 +38,7 @@ const EDGE_PAN_MARGIN = 84;
 const EDGE_PAN_SPEED = 13;
 const STALL_SPEED_THRESHOLD = 0.16;
 const STALL_MILLISECONDS = 3000;
+const NO_LANDING_WIPEOUT_DELAY_MS = 1400;
 
 const RIDER_TYPES = [
   {
@@ -513,6 +514,7 @@ function LineRider() {
   const linesRef = useRef(lines);
   const trailRef = useRef([]);
   const stallSinceRef = useRef(null);
+  const noLandingSinceRef = useRef(null);
   const animRef = useRef(null);
   const frameCountRef = useRef(0);
 
@@ -851,6 +853,7 @@ function LineRider() {
     };
     trailRef.current = [];
     stallSinceRef.current = null;
+    noLandingSinceRef.current = null;
     setCrashReason('wipeout');
     setCrashed(false);
     setPlaying(true);
@@ -862,6 +865,7 @@ function LineRider() {
     riderRef.current = null;
     trailRef.current = [];
     stallSinceRef.current = null;
+    noLandingSinceRef.current = null;
     setRider(null);
     setTrail([]);
     setCrashReason('wipeout');
@@ -935,9 +939,14 @@ function LineRider() {
         const noViableLanding = !grounded && !hasTrackBelow && (farBelowTrack || farOutsideTrackX || farOffscreen);
 
         if (noViableLanding) {
-          r.crashed = true;
-          setCrashReason('wipeout');
-          setCrashed(true);
+          if (!noLandingSinceRef.current) noLandingSinceRef.current = Date.now();
+          if (Date.now() - noLandingSinceRef.current >= NO_LANDING_WIPEOUT_DELAY_MS) {
+            r.crashed = true;
+            setCrashReason('wipeout');
+            setCrashed(true);
+          }
+        } else {
+          noLandingSinceRef.current = null;
         }
 
         const movingSpeed = Math.hypot(r.vx, r.vy);
