@@ -36,6 +36,8 @@ const MINIMAP_W = 128;
 const MINIMAP_H = 92;
 const EDGE_PAN_MARGIN = 84;
 const EDGE_PAN_SPEED = 13;
+const STALL_SPEED_THRESHOLD = 0.16;
+const STALL_MILLISECONDS = 3000;
 
 const RIDER_TYPES = [
   {
@@ -336,6 +338,30 @@ function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
           </G>
         </G>
       );
+    case 'snowboarder':
+      return (
+        <G>
+          <Line x1={-14} y1={7 + bob * 0.45} x2={14} y2={6.2 - bob * 0.2} stroke="#d6f5ff" strokeWidth={2.4} strokeLinecap="round" />
+          <G translateY={-bob * 0.75}>
+            <Path d="M-8,2 L8,3 L7,-3 L-7,-4 Z" fill={primary} />
+            <Circle cx={0} cy={-10} r={4.1} fill="#f2d8c1" />
+            <Path d="M-3,-13 C-1,-15 3,-15 5,-12" stroke="#2b3548" strokeWidth={1.9} fill="none" />
+            <Line x1={-5} y1={-1} x2={-11 + sway} y2={3} stroke={accent} strokeWidth={1.6} />
+            <Line x1={5} y1={-1} x2={11 - sway} y2={3} stroke={accent} strokeWidth={1.6} />
+          </G>
+        </G>
+      );
+    case 'sled':
+      return (
+        <G>
+          <Path d="M-14,8 C-11,4 1,3 14,6" stroke="#f8d480" strokeWidth={2.2} fill="none" />
+          <G translateY={-bob * 0.62}>
+            <Path d="M-10,4 C-7,1 2,1 10,2 C9,5 3,7 -8,8 Z" fill={primary} />
+            <Circle cx={-9} cy={2.4} r={2.4} fill="#f1d6bf" />
+            <Line x1={-3} y1={4} x2={8 - sway * 0.4} y2={6} stroke={accent} strokeWidth={1.6} />
+          </G>
+        </G>
+      );
     case 'comet':
       return (
         <G>
@@ -353,15 +379,14 @@ function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
     case 'blaze':
       return (
         <G>
-          <Line x1={-15} y1={7.5} x2={14} y2={7.5} stroke="#8a8f98" strokeWidth={2.6} strokeLinecap="round" />
-          <Rect x={-12.5} y={4.4} width={5.5} height={3.2} rx={1.2} fill="#4d525b" />
-          <Rect x={8.3} y={4.4} width={4.2} height={3.2} rx={1.1} fill="#4d525b" />
-          <G translateY={-(suspension + bob * 0.3)}>
-            <Path d="M-15,5 L-6,-2 L8,-2 L14,3 L10,6 L-13,6 Z" fill="#1f2430" />
-            <Path d="M-3,-6 L5,-6 L9,-2 L-2,-2 Z" fill={primary} />
-            <Circle cx={0} cy={-10.5} r={4.3} fill="#f2d5bd" />
-            <Path d="M-2,-13 C0,-15 3,-15 5,-13" stroke="#2f3238" strokeWidth={2} fill="none" />
-            <Line x1={4} y1={-7} x2={10 - sway * 0.4} y2={-4 + airTilt * 0.2} stroke={accent} strokeWidth={1.7} />
+          <Line x1={-14} y1={6 + bob * 0.35} x2={15} y2={6 - bob * 0.18} stroke="#d0ae72" strokeWidth={2.2} strokeLinecap="round" />
+          <Line x1={-13} y1={8 + bob * 0.45} x2={14} y2={8 - bob * 0.22} stroke="#b38d58" strokeWidth={1.8} strokeLinecap="round" />
+          <G translateY={-bob * 0.88}>
+            <Path d="M-9,3 C-8,-3 -3,-7 4,-7 C10,-7 11,-1 9,4 Z" fill={primary} />
+            <Circle cx={1} cy={-10.8} r={4.3} fill="#f0cfb0" />
+            <Path d="M-2,-14 C1,-16 5,-16 7,-13" stroke="#5c3f2d" strokeWidth={2} fill="none" />
+            <Line x1={-4} y1={-2} x2={-11 + sway * 0.75} y2={3} stroke={accent} strokeWidth={1.7} />
+            <Line x1={6} y1={-2} x2={12 - sway * 0.75} y2={3} stroke={accent} strokeWidth={1.7} />
           </G>
         </G>
       );
@@ -378,13 +403,56 @@ function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
           </G>
         </G>
       );
+    case 'dirtbike':
+      return (
+        <G>
+          <Line x1={-14} y1={8} x2={14} y2={8} stroke="#7a818b" strokeWidth={2.6} strokeLinecap="round" />
+          <Circle cx={-8} cy={8.2} r={2.2} fill="#3f4652" />
+          <Circle cx={9} cy={8.2} r={2.2} fill="#3f4652" />
+          <G translateY={-(suspension + bob * 0.28)}>
+            <Path d="M-12,5 L-4,-2 L7,-2 L12,3 L8,6 L-11,6 Z" fill="#222a35" />
+            <Path d="M-2,-5 L5,-5 L8,-2 L-1,-2 Z" fill={primary} />
+            <Circle cx={0.8} cy={-10} r={4.0} fill="#f2d5bd" />
+            <Line x1={3} y1={-6.5} x2={9 - sway * 0.35} y2={-3.5 + airTilt * 0.2} stroke={accent} strokeWidth={1.6} />
+          </G>
+        </G>
+      );
+    case 'car':
+      return (
+        <G>
+          <Line x1={-14} y1={8} x2={14} y2={8} stroke="#8f959d" strokeWidth={2.4} strokeLinecap="round" />
+          <Circle cx={-8.2} cy={8.1} r={2.6} fill="#3f4652" />
+          <Circle cx={8.7} cy={8.1} r={2.6} fill="#3f4652" />
+          <G translateY={-(suspension * 0.8 + bob * 0.18)}>
+            <Path d="M-13,4 L-6,-2 L8,-2 L13,3 L10,6 L-12,6 Z" fill={primary} />
+            <Path d="M-4,-2 L4,-2 L6,1 L-3,1 Z" fill="#d8ecff" />
+          </G>
+        </G>
+      );
+    case 'unicycle':
+      return (
+        <G>
+          <Circle cx={0} cy={8} r={5.8} fill="#3d424c" />
+          <Circle cx={0} cy={8} r={2.5} fill="#a2a9b6" />
+          <Line x1={0} y1={2.2} x2={0} y2={-6.5} stroke="#d9dce4" strokeWidth={1.6} />
+          <G translateY={-bob * 0.75}>
+            <Path d="M-4,-1 C-3,-5 1,-7 5,-6 C7,-3 6,1 3,3 Z" fill={primary} />
+            <Circle cx={1.2} cy={-10.4} r={3.8} fill="#f1d5bd" />
+            <Line x1={-1} y1={-2.5} x2={-7 + sway * 0.8} y2={2.5} stroke={accent} strokeWidth={1.5} />
+            <Line x1={3.5} y1={-2.5} x2={8 - sway * 0.8} y2={2.5} stroke={accent} strokeWidth={1.5} />
+          </G>
+        </G>
+      );
     default:
       return (
         <G>
-          <Polygon points="-10,2 12,2 14,-1 12,-4 -8,-4" fill={primary} />
-          <Line x1={-12} y1={RIDER_RADIUS - 2} x2={14} y2={RIDER_RADIUS - 2} stroke="#ffaa44" strokeWidth={2} />
-          <Circle cx={2} cy={-12} r={5} fill="white" />
-          <Line x1={2} y1={-7} x2={0} y2={-2} stroke="white" strokeWidth={2.5} />
+          <Line x1={-14} y1={6 + bob * 0.35} x2={14} y2={6 - bob * 0.2} stroke="#d2b57d" strokeWidth={2.1} strokeLinecap="round" />
+          <G translateY={-bob * 0.75}>
+            <Path d="M-8,2 L8,2 L9,-3 L-7,-4 Z" fill={primary} />
+            <Circle cx={1} cy={-10} r={4.1} fill="#f2d8c1" />
+            <Line x1={-3.5} y1={-1} x2={-10 + sway} y2={3} stroke={accent} strokeWidth={1.6} />
+            <Line x1={5} y1={-1} x2={10 - sway} y2={3} stroke={accent} strokeWidth={1.6} />
+          </G>
         </G>
       );
   }
@@ -425,6 +493,7 @@ function LineRider() {
   const [rider, setRider] = useState(null);
   const [trail, setTrail] = useState([]);
   const [crashed, setCrashed] = useState(false);
+  const [crashReason, setCrashReason] = useState('wipeout');
   const [ownedRiders, setOwnedRiders] = useState(['classic', 'snowboarder', 'sled']);
   const [activeRiderId, setActiveRiderId] = useState('classic');
   const [purchaseBusyId, setPurchaseBusyId] = useState(null);
@@ -443,6 +512,7 @@ function LineRider() {
   const riderRef = useRef(null);
   const linesRef = useRef(lines);
   const trailRef = useRef([]);
+  const stallSinceRef = useRef(null);
   const animRef = useRef(null);
   const frameCountRef = useRef(0);
 
@@ -780,6 +850,8 @@ function LineRider() {
       riderTypeId: activeRiderId,
     };
     trailRef.current = [];
+    stallSinceRef.current = null;
+    setCrashReason('wipeout');
     setCrashed(false);
     setPlaying(true);
   }, [activeRiderId, lines]);
@@ -789,8 +861,10 @@ function LineRider() {
     if (animRef.current) cancelAnimationFrame(animRef.current);
     riderRef.current = null;
     trailRef.current = [];
+    stallSinceRef.current = null;
     setRider(null);
     setTrail([]);
+    setCrashReason('wipeout');
     setCrashed(false);
   }, []);
 
@@ -862,7 +936,20 @@ function LineRider() {
 
         if (noViableLanding) {
           r.crashed = true;
+          setCrashReason('wipeout');
           setCrashed(true);
+        }
+
+        const movingSpeed = Math.hypot(r.vx, r.vy);
+        if (!r.crashed && grounded && movingSpeed < STALL_SPEED_THRESHOLD) {
+          if (!stallSinceRef.current) stallSinceRef.current = Date.now();
+          if (Date.now() - stallSinceRef.current >= STALL_MILLISECONDS) {
+            r.crashed = true;
+            setCrashReason('stalled');
+            setCrashed(true);
+          }
+        } else {
+          stallSinceRef.current = null;
         }
 
         trailRef.current.push({ x: r.x, y: r.y });
@@ -1193,7 +1280,7 @@ function LineRider() {
           {/* Crash overlay */}
           {crashed && (
             <View style={s.crashOverlay}>
-              <Text style={s.crashText}>WIPEOUT!</Text>
+              <Text style={s.crashText}>{crashReason === 'stalled' ? 'STALLED OUT!' : 'WIPEOUT!'}</Text>
               <TouchableOpacity onPress={stopPlay} style={s.retryBtn}>
                 <Text style={s.retryText}>TRY AGAIN</Text>
               </TouchableOpacity>
