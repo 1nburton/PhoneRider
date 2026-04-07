@@ -9,7 +9,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, Dimensions, Alert, ScrollView, Modal,
+  View, Text, TouchableOpacity, Dimensions, Alert, ScrollView, Modal, TextInput,
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -511,6 +511,7 @@ function LineRider() {
   const [showCharacterShop, setShowCharacterShop] = useState(false);
   const [showSaveSlots, setShowSaveSlots] = useState(false);
   const [savedTrackSlots, setSavedTrackSlots] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, () => null));
+  const [saveSlotNames, setSaveSlotNames] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, (_, index) => `Track ${index + 1}`));
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
   // Camera: panX/panY in screen-space, zoom multiplier
@@ -540,6 +541,10 @@ function LineRider() {
         if (!Array.isArray(parsed)) return;
         const normalized = Array.from({ length: TRACK_SAVE_SLOT_COUNT }, (_, index) => parsed[index] || null);
         setSavedTrackSlots(normalized);
+        setSaveSlotNames(Array.from(
+          { length: TRACK_SAVE_SLOT_COUNT },
+          (_, index) => normalized[index]?.name || `Track ${index + 1}`
+        ));
       } catch (_) {
         // Ignore corrupted save data and keep empty slots.
       }
@@ -625,8 +630,12 @@ function LineRider() {
       return;
     }
 
+    const enteredName = saveSlotNames[slotIndex] || '';
+    const trackName = enteredName.trim() || `Track ${slotIndex + 1}`;
+
     const slotPayload = {
       id: slotIndex,
+      name: trackName,
       savedAt: new Date().toISOString(),
       lineCount: linesRef.current.length,
       pointCount: countTrackPoints(linesRef.current),
@@ -639,7 +648,29 @@ function LineRider() {
       persistTrackSlots(next);
       return next;
     });
+    setSaveSlotNames((prev) => {
+      const next = [...prev];
+      next[slotIndex] = trackName;
+      return next;
+    });
     Alert.alert('Track saved', `Saved to slot ${slotIndex + 1}.`);
+  }, [persistTrackSlots, saveSlotNames]);
+
+  const updateSaveSlotName = useCallback((slotIndex, nextName) => {
+    setSaveSlotNames((prev) => {
+      const next = [...prev];
+      next[slotIndex] = nextName;
+      return next;
+    });
+
+    setSavedTrackSlots((prev) => {
+      const existing = prev[slotIndex];
+      if (!existing) return prev;
+      const next = [...prev];
+      next[slotIndex] = { ...existing, name: nextName.trim() || `Track ${slotIndex + 1}` };
+      persistTrackSlots(next);
+      return next;
+    });
   }, [persistTrackSlots]);
 
   const loadTrackFromSlot = useCallback((slotIndex) => {
@@ -1149,11 +1180,6 @@ function LineRider() {
         </View>
 
         <View style={[s.toolGroup, s.toolGroupRight]}>
-          {!playing && (
-            <TouchableOpacity onPress={() => setShowSaveSlots(true)} style={s.secondaryBtn}>
-              <Text style={s.secondaryBtnText}>SAVES</Text>
-            </TouchableOpacity>
-          )}
           {!playing ? (
             <TouchableOpacity onPress={startPlay} disabled={!lines.length}
               style={[s.playBtn, !lines.length && s.playBtnOff]}>
@@ -1295,6 +1321,14 @@ function LineRider() {
 
           {/* Zoom controls overlay */}
           <View style={s.zoomBar}>
+            {!playing && (
+              <>
+                <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowSaveSlots(true)}>
+                  <Text style={s.zoomBtnTextSmall}>SAVES</Text>
+                </TouchableOpacity>
+                <View style={s.zoomDivider} />
+              </>
+            )}
             <TouchableOpacity style={s.zoomBtn} onPress={() => {
               const c = camRef.current;
               const nz = Math.min(MAX_ZOOM, c.zoom * 1.3);
@@ -1425,6 +1459,14 @@ function LineRider() {
                 <View key={`slot-${index}`} style={s.saveSlotCard}>
                   <View style={s.saveSlotMeta}>
                     <Text style={s.saveSlotTitle}>Slot {index + 1}</Text>
+                    <TextInput
+                      value={saveSlotNames[index]}
+                      onChangeText={(value) => updateSaveSlotName(index, value)}
+                      placeholder={`Track ${index + 1}`}
+                      placeholderTextColor="rgba(223,247,255,0.35)"
+                      style={s.saveSlotInput}
+                      maxLength={28}
+                    />
                     <Text style={s.saveSlotSubtitle}>
                       {slot
                         ? `${slot.lineCount} lines • ${slot.pointCount} pts • ${new Date(slot.savedAt).toLocaleDateString()}`
@@ -1574,6 +1616,9 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   saveSlotMeta: { flex: 1 },
   saveSlotTitle: { color: '#dff7ff', fontSize: 13, fontWeight: '800' },
+  saveSlotInput: { marginTop: 6, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(124,226,255,0.22)',
+    backgroundColor: 'rgba(12,18,34,0.75)', color: '#dff7ff', paddingHorizontal: 9, paddingVertical: 6,
+    fontSize: 12, fontWeight: '700' },
   saveSlotSubtitle: { color: 'rgba(223,247,255,0.55)', fontSize: 10, marginTop: 3 },
   saveSlotActions: { flexDirection: 'row', gap: 8 },
   saveSlotBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1,
@@ -1627,6 +1672,10 @@ const s = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.12)', backgroundColor: 'rgba(255,255,255,0.06)',
     alignItems: 'center', justifyContent: 'center' },
   zoomBtnText: { color: 'rgba(255,255,255,0.6)', fontSize: 16, fontWeight: '600' },
+  zoomBtnWide: { minWidth: 58, height: 28, borderRadius: 6, borderWidth: 1,
+    borderColor: 'rgba(124,226,255,0.32)', backgroundColor: 'rgba(124,226,255,0.08)',
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  zoomBtnTextSmall: { color: '#dff7ff', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   zoomBtnTextDisabled: { color: 'rgba(255,255,255,0.25)' },
   zoomPct: { color: 'rgba(255,255,255,0.5)', fontSize: 11, minWidth: 34, textAlign: 'center',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
