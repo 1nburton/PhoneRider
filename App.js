@@ -215,6 +215,39 @@ function getLinesBounds(lines) {
   return { minX, minY, maxX, maxY };
 }
 
+function getCollidableBounds(lines) {
+  const collidable = lines.filter((line) => lineTypeConfig(lineType(line)).collidable);
+  return getLinesBounds(collidable);
+}
+
+function hasReachableTrackBelow(lines, rider) {
+  const downwardSpeed = Math.max(0, rider.vy || 0);
+  const horizontalReach = 120 + Math.abs(rider.vx || 0) * 26 + downwardSpeed * 10;
+  const verticalSearchDepth = 220 + downwardSpeed * 34;
+
+  for (const line of lines) {
+    const cfg = lineTypeConfig(lineType(line));
+    if (!cfg.collidable) continue;
+
+    const pts = linePoints(line);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const segMinX = Math.min(p1.x, p2.x);
+      const segMaxX = Math.max(p1.x, p2.x);
+      const segMinY = Math.min(p1.y, p2.y);
+
+      if (segMinY < rider.y - RIDER_RADIUS) continue;
+      if (segMinY - rider.y > verticalSearchDepth) continue;
+      if (rider.x < segMinX - horizontalReach || rider.x > segMaxX + horizontalReach) continue;
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
   const primary = cfg?.color || '#ff713a';
   const accent = cfg?.accent || '#ffffff';
@@ -752,7 +785,20 @@ function LineRider() {
           r.vx = (r.vx / postSpeed) * activeCfg.topSpeed;
           r.vy = (r.vy / postSpeed) * activeCfg.topSpeed;
         }
-        if (r.y > canvasSize.height / camRef.current.zoom + 800) { r.crashed = true; setCrashed(true); }
+
+        const collidableBounds = getCollidableBounds(linesRef.current);
+        const hasTrackBelow = hasReachableTrackBelow(linesRef.current, r);
+        const farBelowTrack = collidableBounds ? r.y > collidableBounds.maxY + 260 : false;
+        const farOutsideTrackX = collidableBounds
+          ? (r.x < collidableBounds.minX - 420 || r.x > collidableBounds.maxX + 420)
+          : false;
+        const farOffscreen = r.y > canvasSize.height / camRef.current.zoom + 1100;
+        const noViableLanding = !grounded && !hasTrackBelow && (farBelowTrack || farOutsideTrackX || farOffscreen);
+
+        if (noViableLanding) {
+          r.crashed = true;
+          setCrashed(true);
+        }
 
         trailRef.current.push({ x: r.x, y: r.y });
         if (trailRef.current.length > 200) trailRef.current.shift();
