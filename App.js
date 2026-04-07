@@ -165,7 +165,7 @@ const RIDER_TYPES = [
 
 const LINE_TYPES = [
   { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1,   speedDrag: 0,      collidable: true },
-  { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.12, speedDrag: 0.02,   collidable: true },
+  { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.14, speedDrag: 0.05,   collidable: true },
   { id: 'brake', label: 'Brake', color: '#ffd64d', glow: 'rgba(255,214,77,0.24)', speedMult: 0.84, speedDrag: -0.02,  collidable: true },
   { id: 'scenery', label: 'Scenery', color: '#b58cff', glow: 'rgba(181,140,255,0.18)', speedMult: 1, speedDrag: 0,      collidable: false },
 ];
@@ -1028,7 +1028,7 @@ function LineRider() {
                   if (curSpeed > 0.01) {
                     const targetSpeed = curSpeed * cfg.speedMult;
                     const nextSpeed = Math.max(0, curSpeed + cfg.speedDrag * curSpeed);
-                    const blendFactor = cfg.speedDrag > 0 ? 0.6 : (cfg.speedDrag < 0 ? 0.45 : 0.18);
+                    const blendFactor = cfg.speedDrag > 0 ? 0.9 : (cfg.speedDrag < 0 ? 0.45 : 0.18);
                     const blended = curSpeed + (nextSpeed - curSpeed) * blendFactor;
                     const clampedSpeed = cfg.speedDrag < 0
                       ? Math.max(targetSpeed, blended)
