@@ -40,16 +40,42 @@ const EDGE_PAN_SPEED = 13;
 const RIDER_TYPES = [
   {
     id: 'classic',
-    name: 'Bigfoot Skier',
+    name: 'Female Skier',
     productId: null,
     priceUsd: 0,
-    color: '#8b5e3c',
-    accent: '#ffd49b',
+    color: '#66d7ff',
+    accent: '#ffd8ec',
     launchSpeed: 1.5,
     topSpeed: 20,
-    icon: '🦶',
-    blurb: 'Raw power and heavy grip on steep lines.',
-    motion: { pace: 0.82, bob: 1.45, sway: 0.75, suspension: 0.55, airTilt: 0.6 },
+    icon: '⛷️',
+    blurb: 'Balanced starter with smooth control and reliable landings.',
+    motion: { pace: 0.95, bob: 1.0, sway: 0.9, suspension: 0.45, airTilt: 0.75 },
+  },
+  {
+    id: 'snowboarder',
+    name: 'Snowboarder',
+    productId: null,
+    priceUsd: 0,
+    color: '#7effa1',
+    accent: '#e6ffd1',
+    launchSpeed: 1.55,
+    topSpeed: 20.5,
+    icon: '🏂',
+    blurb: 'Free rider with stable edge control and soft transitions.',
+    motion: { pace: 1.05, bob: 0.9, sway: 1.15, suspension: 0.35, airTilt: 0.9 },
+  },
+  {
+    id: 'sled',
+    name: 'Sled',
+    productId: null,
+    priceUsd: 0,
+    color: '#ffc169',
+    accent: '#fff4ce',
+    launchSpeed: 1.6,
+    topSpeed: 21,
+    icon: '🛷',
+    blurb: 'Low profile and forgiving glide, perfect for long tracks.',
+    motion: { pace: 1.1, bob: 0.8, sway: 1.25, suspension: 0.2, airTilt: 1.1 },
   },
   {
     id: 'comet',
@@ -61,34 +87,73 @@ const RIDER_TYPES = [
     launchSpeed: 1.8,
     topSpeed: 22,
     icon: '❄️',
-    blurb: 'Fast downhill charger with icy control.',
+    blurb: 'Massive stride and heavy bounce through rough sections.',
     motion: { pace: 1.0, bob: 1.05, sway: 1.25, suspension: 0.35, airTilt: 1.0 },
   },
   {
     id: 'blaze',
-    name: 'Snowmobile Rider',
+    name: 'Bigfoot',
     productId: 'rider_blaze_1usd',
     priceUsd: 1,
-    color: '#ff6f3d',
-    accent: '#ffd94d',
+    color: '#9a6544',
+    accent: '#f5cc9b',
     launchSpeed: 2.0,
     topSpeed: 23,
-    icon: '🏍️',
-    blurb: 'High top speed and aggressive acceleration.',
-    motion: { pace: 1.18, bob: 0.55, sway: 0.45, suspension: 1.75, airTilt: 0.5 },
+    icon: '🦶',
+    blurb: 'Raw power and aggressive acceleration on steep drops.',
+    motion: { pace: 0.86, bob: 1.5, sway: 0.75, suspension: 0.55, airTilt: 0.6 },
   },
   {
     id: 'nova',
-    name: 'Belly Slider',
+    name: 'Fourwheeler',
     productId: 'rider_nova_1usd',
     priceUsd: 1,
-    color: '#f08cff',
-    accent: '#7ce2ff',
+    color: '#ff8a4d',
+    accent: '#ffd65b',
     launchSpeed: 2.2,
     topSpeed: 24,
-    icon: '🛷',
-    blurb: 'Low-drag madness for wild speed runs.',
-    motion: { pace: 1.32, bob: 0.85, sway: 1.4, suspension: 0.25, airTilt: 1.45 },
+    icon: '🚙',
+    blurb: 'Fast motorized grip with strong suspension response.',
+    motion: { pace: 1.2, bob: 0.6, sway: 0.55, suspension: 1.8, airTilt: 0.5 },
+  },
+  {
+    id: 'dirtbike',
+    name: 'Dirtbike',
+    productId: 'rider_dirtbike_1usd',
+    priceUsd: 1,
+    color: '#ff5f4a',
+    accent: '#ffe36a',
+    launchSpeed: 2.25,
+    topSpeed: 24.5,
+    icon: '🏍️',
+    blurb: 'Quick throttle bursts and twitchy handling for jumps.',
+    motion: { pace: 1.3, bob: 0.65, sway: 0.7, suspension: 1.6, airTilt: 0.7 },
+  },
+  {
+    id: 'car',
+    name: 'Car',
+    productId: 'rider_car_1usd',
+    priceUsd: 1,
+    color: '#7ac8ff',
+    accent: '#d8f2ff',
+    launchSpeed: 2.05,
+    topSpeed: 25,
+    icon: '🚗',
+    blurb: 'High top speed and planted feel on straight sections.',
+    motion: { pace: 1.0, bob: 0.45, sway: 0.35, suspension: 1.35, airTilt: 0.45 },
+  },
+  {
+    id: 'unicycle',
+    name: 'Unicycle',
+    productId: 'rider_unicycle_1usd',
+    priceUsd: 1,
+    color: '#d099ff',
+    accent: '#f5dcff',
+    launchSpeed: 2.1,
+    topSpeed: 24,
+    icon: '🎪',
+    blurb: 'Chaotic balancing act with sharp lean corrections.',
+    motion: { pace: 1.42, bob: 1.35, sway: 1.55, suspension: 0.15, airTilt: 1.5 },
   },
 ];
 
@@ -360,7 +425,7 @@ function LineRider() {
   const [rider, setRider] = useState(null);
   const [trail, setTrail] = useState([]);
   const [crashed, setCrashed] = useState(false);
-  const [ownedRiders, setOwnedRiders] = useState(['classic']);
+  const [ownedRiders, setOwnedRiders] = useState(['classic', 'snowboarder', 'sled']);
   const [activeRiderId, setActiveRiderId] = useState('classic');
   const [purchaseBusyId, setPurchaseBusyId] = useState(null);
   const [paymentLedger, setPaymentLedger] = useState({});
@@ -1190,18 +1255,22 @@ function LineRider() {
                     onPress={() => activateOrPurchaseRider(rt.id)}
                     disabled={purchaseBusyId === rt.id}
                   >
-                    <View style={s.shopCardTop}>
-                      <Text style={s.shopIcon}>{rt.icon || '⛷'}</Text>
-                      <View style={[s.riderSwatch, { backgroundColor: rt.color }]} />
+                    <View style={s.shopMedia}>
+                      <View style={[s.shopImageBadge, { borderColor: rt.color, backgroundColor: `${rt.color}22` }]}>
+                        <Text style={s.shopIcon}>{rt.icon || '⛷'}</Text>
+                      </View>
                     </View>
-                    <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
-                    <Text style={s.shopBlurb}>{rt.blurb}</Text>
-                    <Text style={s.riderMeta}>TOP {rt.topSpeed} • LAUNCH {rt.launchSpeed.toFixed(1)}</Text>
-                    <Text style={s.riderPrice}>
-                      {owned
-                        ? (active ? 'Selected' : 'Owned')
-                        : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
-                    </Text>
+
+                    <View style={s.shopDetails}>
+                      <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
+                      <Text style={s.shopBlurb}>{rt.blurb}</Text>
+                      <Text style={s.riderMeta}>TOP {rt.topSpeed} • LAUNCH {rt.launchSpeed.toFixed(1)}</Text>
+                      <Text style={s.riderPrice}>
+                        {owned
+                          ? (active ? 'Selected' : 'Owned')
+                          : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
+                      </Text>
+                    </View>
                   </TouchableOpacity>
                 );
               })}
@@ -1271,13 +1340,15 @@ const s = StyleSheet.create({
   shopList: { gap: 8, paddingVertical: 8 },
   restoreLink: { color: '#7ce2ff', fontSize: 11, fontWeight: '700' },
   riderCard: { minWidth: 88, borderRadius: 9, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 8, paddingVertical: 6 },
+    backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 10, paddingVertical: 8 },
   shopCard: { minWidth: undefined },
-  shopCardTop: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
-  shopIcon: { fontSize: 18 },
-  shopBlurb: { color: 'rgba(255,255,255,0.55)', fontSize: 10, marginTop: 2 },
+  shopMedia: { width: 66, alignItems: 'center', justifyContent: 'center' },
+  shopImageBadge: { width: 54, height: 54, borderRadius: 14, borderWidth: 1.5,
+    alignItems: 'center', justifyContent: 'center' },
+  shopDetails: { flex: 1, paddingLeft: 8 },
+  shopIcon: { fontSize: 28 },
+  shopBlurb: { color: 'rgba(255,255,255,0.55)', fontSize: 10, marginTop: 2, lineHeight: 14 },
   riderCardActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.12)' },
-  riderSwatch: { width: 16, height: 16, borderRadius: 8, marginBottom: 4 },
   riderName: { color: 'rgba(255,255,255,0.78)', fontSize: 11, fontWeight: '700' },
   riderNameActive: { color: '#00ffc8' },
   riderMeta: { color: 'rgba(255,255,255,0.38)', fontSize: 9, marginTop: 2 },
