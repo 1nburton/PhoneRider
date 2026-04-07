@@ -12,6 +12,7 @@ import {
   View, Text, TouchableOpacity, Dimensions, Alert, ScrollView, Modal,
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as RNIap from 'react-native-iap';
 import Svg, {
   Path, Circle, G, Line, Rect, Polygon,
@@ -39,6 +40,8 @@ const EDGE_PAN_SPEED = 13;
 const STALL_SPEED_THRESHOLD = 0.16;
 const STALL_MILLISECONDS = 3000;
 const NO_LANDING_WIPEOUT_DELAY_MS = 1400;
+const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
+const TRACK_SAVE_SLOT_COUNT = 3;
 
 const RIDER_TYPES = [
   {
@@ -474,6 +477,10 @@ function nearestPointOnTrack(lines, wx, wy) {
   return best;
 }
 
+function countTrackPoints(lines) {
+  return lines.reduce((total, line) => total + linePoints(line).length, 0);
+}
+
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -502,6 +509,8 @@ function LineRider() {
   const [storeReady, setStoreReady] = useState(false);
   const [storePrices, setStorePrices] = useState({});
   const [showCharacterShop, setShowCharacterShop] = useState(false);
+  const [showSaveSlots, setShowSaveSlots] = useState(false);
+  const [savedTrackSlots, setSavedTrackSlots] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, () => null));
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
   // Camera: panX/panY in screen-space, zoom multiplier
@@ -519,6 +528,34 @@ function LineRider() {
   const frameCountRef = useRef(0);
 
   useEffect(() => { linesRef.current = lines; }, [lines]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadSavedTrackSlots = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(TRACK_SAVE_STORAGE_KEY);
+        if (!mounted || !raw) return;
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return;
+        const normalized = Array.from({ length: TRACK_SAVE_SLOT_COUNT }, (_, index) => parsed[index] || null);
+        setSavedTrackSlots(normalized);
+      } catch (_) {
+        // Ignore corrupted save data and keep empty slots.
+      }
+    };
+
+    loadSavedTrackSlots();
+    return () => { mounted = false; };
+  }, []);
+
+  const persistTrackSlots = useCallback(async (slots) => {
+    try {
+      await AsyncStorage.setItem(TRACK_SAVE_STORAGE_KEY, JSON.stringify(slots));
+    } catch (_) {
+      Alert.alert('Save failed', 'Unable to update saved track slots right now.');
+    }
+  }, []);
 
   // Screen → world coordinate
   const s2w = useCallback((sx, sy) => ({
@@ -581,6 +618,48 @@ function LineRider() {
     }));
     setLines((prev) => [...prev, { points: placed, type: lineStyle }]);
   }, [lineStyle, presetRotationDeg, presetScale, selectedPresetId]);
+
+  const saveTrackToSlot = useCallback((slotIndex) => {
+    if (!linesRef.current.length) {
+      Alert.alert('Nothing to save', 'Draw a track before saving it to a slot.');
+      return;
+    }
+
+    const slotPayload = {
+      id: slotIndex,
+      savedAt: new Date().toISOString(),
+      lineCount: linesRef.current.length,
+      pointCount: countTrackPoints(linesRef.current),
+      lines: JSON.parse(JSON.stringify(linesRef.current)),
+    };
+
+    setSavedTrackSlots((prev) => {
+      const next = [...prev];
+      next[slotIndex] = slotPayload;
+      persistTrackSlots(next);
+      return next;
+    });
+    Alert.alert('Track saved', `Saved to slot ${slotIndex + 1}.`);
+  }, [persistTrackSlots]);
+
+  const loadTrackFromSlot = useCallback((slotIndex) => {
+    const slot = savedTrackSlots[slotIndex];
+    if (!slot?.lines?.length) {
+      Alert.alert('Empty slot', 'This save slot does not have a track yet.');
+      return;
+    }
+
+    stopPlay();
+    const nextLines = JSON.parse(JSON.stringify(slot.lines));
+    linesRef.current = nextLines;
+    setLines(nextLines);
+    setCurrentStroke([]);
+    setShowSaveSlots(false);
+    requestAnimationFrame(() => {
+      resetView();
+      requestAnimationFrame(() => fitTrackInView());
+    });
+  }, [fitTrackInView, resetView, savedTrackSlots, stopPlay]);
 
   useEffect(() => {
     let mounted = true;
@@ -1070,6 +1149,11 @@ function LineRider() {
         </View>
 
         <View style={[s.toolGroup, s.toolGroupRight]}>
+          {!playing && (
+            <TouchableOpacity onPress={() => setShowSaveSlots(true)} style={s.secondaryBtn}>
+              <Text style={s.secondaryBtnText}>SAVES</Text>
+            </TouchableOpacity>
+          )}
           {!playing ? (
             <TouchableOpacity onPress={startPlay} disabled={!lines.length}
               style={[s.playBtn, !lines.length && s.playBtnOff]}>
@@ -1319,6 +1403,54 @@ function LineRider() {
       </GestureDetector>
 
       <Modal
+        visible={showSaveSlots}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowSaveSlots(false)}
+      >
+        <View style={s.shopBackdrop}>
+          <View style={s.shopSheet}>
+            <View style={s.shopHeader}>
+              <View>
+                <Text style={s.shopTitle}>Saved Tracks</Text>
+                <Text style={s.shopSubtitle}>Three local slots on this device</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowSaveSlots(false)} style={s.shopCloseBtn}>
+                <Text style={s.shopCloseText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={s.shopList}>
+              {savedTrackSlots.map((slot, index) => (
+                <View key={`slot-${index}`} style={s.saveSlotCard}>
+                  <View style={s.saveSlotMeta}>
+                    <Text style={s.saveSlotTitle}>Slot {index + 1}</Text>
+                    <Text style={s.saveSlotSubtitle}>
+                      {slot
+                        ? `${slot.lineCount} lines • ${slot.pointCount} pts • ${new Date(slot.savedAt).toLocaleDateString()}`
+                        : 'Empty slot'}
+                    </Text>
+                  </View>
+                  <View style={s.saveSlotActions}>
+                    <TouchableOpacity style={s.saveSlotBtn} onPress={() => saveTrackToSlot(index)}>
+                      <Text style={s.saveSlotBtnText}>Save</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[s.saveSlotBtn, !slot && s.saveSlotBtnDisabled]}
+                      onPress={() => loadTrackFromSlot(index)}
+                      disabled={!slot}
+                    >
+                      <Text style={[s.saveSlotBtnText, !slot && s.saveSlotBtnTextDisabled]}>Load</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={showCharacterShop}
         animationType="slide"
         transparent
@@ -1404,10 +1536,13 @@ const s = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: 'rgba(0,255,200,0.15)' },
   toolGroup: { flexDirection: 'row', gap: 5 },
   toolGroupLeft: { flexShrink: 1, flexWrap: 'wrap', rowGap: 4, marginRight: 6 },
-  toolGroupRight: { flexShrink: 0 },
+  toolGroupRight: { flexShrink: 0, flexDirection: 'row', gap: 5 },
   toolBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4,
     borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.04)', gap: 4 },
+  secondaryBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1.5,
+    borderColor: 'rgba(124,226,255,0.3)', backgroundColor: 'rgba(124,226,255,0.08)' },
+  secondaryBtnText: { color: '#dff7ff', fontWeight: '800', fontSize: 10, letterSpacing: 0.6 },
   toolBtnActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.12)' },
   toolLabel: { fontSize: 12, color: 'rgba(255,255,255,0.5)', fontWeight: '600' },
   toolLabelActive: { color: '#00ffc8' },
@@ -1434,6 +1569,18 @@ const s = StyleSheet.create({
   shopCloseBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.07)' },
   shopCloseText: { color: '#dff7ff', fontSize: 12, fontWeight: '800' },
   shopList: { gap: 8, paddingVertical: 8 },
+  saveSlotCard: { borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 12, paddingVertical: 10,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  saveSlotMeta: { flex: 1 },
+  saveSlotTitle: { color: '#dff7ff', fontSize: 13, fontWeight: '800' },
+  saveSlotSubtitle: { color: 'rgba(223,247,255,0.55)', fontSize: 10, marginTop: 3 },
+  saveSlotActions: { flexDirection: 'row', gap: 8 },
+  saveSlotBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1,
+    borderColor: 'rgba(124,226,255,0.32)', backgroundColor: 'rgba(124,226,255,0.08)' },
+  saveSlotBtnDisabled: { borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.03)' },
+  saveSlotBtnText: { color: '#dff7ff', fontSize: 11, fontWeight: '800' },
+  saveSlotBtnTextDisabled: { color: 'rgba(255,255,255,0.35)' },
   restoreLink: { color: '#7ce2ff', fontSize: 11, fontWeight: '700' },
   riderCard: { minWidth: 88, borderRadius: 9, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
     backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 10, paddingVertical: 8 },
