@@ -164,10 +164,10 @@ const RIDER_TYPES = [
 ];
 
 const LINE_TYPES = [
-  { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1, collidable: true },
-  { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.08, collidable: true },
-  { id: 'brake', label: 'Brake', color: '#ffd64d', glow: 'rgba(255,214,77,0.24)', speedMult: 0.88, collidable: true },
-  { id: 'scenery', label: 'Scenery', color: '#b58cff', glow: 'rgba(181,140,255,0.18)', speedMult: 1, collidable: false },
+  { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1,   speedDrag: 0,      collidable: true },
+  { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.08, speedDrag: 0.004,  collidable: true },
+  { id: 'brake', label: 'Brake', color: '#ffd64d', glow: 'rgba(255,214,77,0.24)', speedMult: 0.88, speedDrag: -0.006, collidable: true },
+  { id: 'scenery', label: 'Scenery', color: '#b58cff', glow: 'rgba(181,140,255,0.18)', speedMult: 1, speedDrag: 0,      collidable: false },
 ];
 
 const PRESET_LIBRARY = [
@@ -1022,8 +1022,21 @@ function LineRider() {
                   r.vx = tx * tDot * FRICTION;
                   r.vy = ty * tDot * FRICTION;
                 }
-                r.vx *= cfg.speedMult;
-                r.vy *= cfg.speedMult;
+                if (cfg.speedDrag !== 0) {
+                  // Gradual speed change: nudge current speed toward target each contact step
+                  const curSpeed = Math.hypot(r.vx, r.vy);
+                  if (curSpeed > 0.01) {
+                    const targetSpeed = curSpeed * cfg.speedMult;
+                    const nextSpeed = Math.max(0, curSpeed + cfg.speedDrag * curSpeed);
+                    const blended = curSpeed + (nextSpeed - curSpeed) * 0.18;
+                    const clampedSpeed = cfg.speedDrag < 0
+                      ? Math.max(targetSpeed, blended)
+                      : Math.min(targetSpeed, blended);
+                    const scale = clampedSpeed / curSpeed;
+                    r.vx *= scale;
+                    r.vy *= scale;
+                  }
+                }
                 r.angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
                 grounded = true;
               }
