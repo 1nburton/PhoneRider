@@ -13,7 +13,6 @@ import {
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Audio } from 'expo-av';
 import * as RNIap from 'react-native-iap';
 import Svg, {
   Path, Circle, G, Line, Rect, Polygon,
@@ -751,6 +750,8 @@ function LineRider() {
   const frameCountRef = useRef(0);
   const soundRefs = useRef({ play: null, boost: null, crash: null });
   const soundReadyRef = useRef(false);
+  const soundInitStartedRef = useRef(false);
+  const soundModuleRef = useRef(null);
   const crashSoundPlayedRef = useRef(false);
   const lastBoostSoundAtRef = useRef(0);
 
@@ -780,62 +781,66 @@ function LineRider() {
     return () => { mounted = false; };
   }, []);
 
+  const ensureSfxReady = useCallback(async () => {
+    if (soundReadyRef.current) return true;
+    if (soundInitStartedRef.current) return false;
+
+    soundInitStartedRef.current = true;
+    try {
+      const expoAv = await import('expo-av');
+      const Audio = expoAv?.Audio;
+      if (!Audio) throw new Error('Audio module unavailable');
+      soundModuleRef.current = Audio;
+
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        staysActiveInBackground: false,
+      });
+
+      const [playSound, boostSound, crashSound] = await Promise.all([
+        Audio.Sound.createAsync(require('./assets/sfx/play.wav'), { volume: 0.48 }),
+        Audio.Sound.createAsync(require('./assets/sfx/boost.wav'), { volume: 0.42 }),
+        Audio.Sound.createAsync(require('./assets/sfx/crash.wav'), { volume: 0.58 }),
+      ]);
+
+      soundRefs.current = {
+        play: playSound.sound,
+        boost: boostSound.sound,
+        crash: crashSound.sound,
+      };
+      soundReadyRef.current = true;
+      return true;
+    } catch (_) {
+      soundReadyRef.current = false;
+      soundModuleRef.current = null;
+      soundInitStartedRef.current = false;
+      return false;
+    }
+  }, []);
+
   const playSfx = useCallback(async (soundId) => {
+    if (!soundReadyRef.current) {
+      const ready = await ensureSfxReady();
+      if (!ready) return;
+    }
     const sound = soundRefs.current[soundId];
-    if (!soundReadyRef.current || !sound) return;
+    if (!sound) return;
     try {
       await sound.replayAsync();
     } catch (_) {
       // SFX errors should not interrupt gameplay.
     }
-  }, []);
+  }, [ensureSfxReady]);
 
-  useEffect(() => {
-    let mounted = true;
-
-    const loadSfx = async () => {
-      try {
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          shouldDuckAndroid: true,
-          staysActiveInBackground: false,
-        });
-
-        const [playSound, boostSound, crashSound] = await Promise.all([
-          Audio.Sound.createAsync(require('./assets/sfx/play.wav'), { volume: 0.48 }),
-          Audio.Sound.createAsync(require('./assets/sfx/boost.wav'), { volume: 0.42 }),
-          Audio.Sound.createAsync(require('./assets/sfx/crash.wav'), { volume: 0.58 }),
-        ]);
-
-        if (!mounted) {
-          await Promise.all([
-            playSound.sound.unloadAsync(),
-            boostSound.sound.unloadAsync(),
-            crashSound.sound.unloadAsync(),
-          ]);
-          return;
-        }
-
-        soundRefs.current = {
-          play: playSound.sound,
-          boost: boostSound.sound,
-          crash: crashSound.sound,
-        };
-        soundReadyRef.current = true;
-      } catch (_) {
-        soundReadyRef.current = false;
-      }
-    };
-
-    loadSfx();
-    return () => {
-      mounted = false;
-      soundReadyRef.current = false;
-      Object.values(soundRefs.current).forEach((sound) => {
-        sound?.unloadAsync?.().catch(() => {});
-      });
-      soundRefs.current = { play: null, boost: null, crash: null };
-    };
+  useEffect(() => () => {
+    soundReadyRef.current = false;
+    soundInitStartedRef.current = false;
+    soundModuleRef.current = null;
+    Object.values(soundRefs.current).forEach((sound) => {
+      sound?.unloadAsync?.().catch(() => {});
+    });
+    soundRefs.current = { play: null, boost: null, crash: null };
   }, []);
 
   const persistTrackSlots = useCallback(async (slots) => {
