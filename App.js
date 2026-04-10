@@ -42,6 +42,7 @@ const STALL_MILLISECONDS = 3000;
 const NO_LANDING_WIPEOUT_DELAY_MS = 1400;
 const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
 const TRACK_SAVE_SLOT_COUNT = 3;
+const CHARACTER_SHOP_ENABLED = false;
 
 const RIDER_TYPES = [
   {
@@ -219,6 +220,173 @@ const PRESET_LIBRARY = [
       { x: 70, y: 20 },
       { x: 125, y: -20 },
       { x: 175, y: -42 },
+    ],
+  },
+];
+
+const DEMO_TRACK_LIBRARY = [
+  {
+    id: 'glacier_cruise',
+    name: 'Glacier Cruise',
+    difficulty: 'Easy',
+    description: 'Long flowing descent with forgiving rollers.',
+    recommendedRiderId: 'classic',
+    lines: [
+      {
+        type: 'normal',
+        points: [
+          { x: -360, y: -40 },
+          { x: -300, y: -52 },
+          { x: -240, y: -72 },
+          { x: -160, y: -95 },
+          { x: -60, y: -120 },
+          { x: 40, y: -148 },
+          { x: 150, y: -170 },
+          { x: 250, y: -188 },
+          { x: 350, y: -208 },
+        ],
+      },
+      {
+        type: 'boost',
+        points: [
+          { x: 350, y: -208 },
+          { x: 430, y: -245 },
+          { x: 520, y: -266 },
+          { x: 620, y: -285 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 620, y: -285 },
+          { x: 730, y: -320 },
+          { x: 860, y: -330 },
+          { x: 980, y: -300 },
+        ],
+      },
+      {
+        type: 'scenery',
+        points: [
+          { x: -220, y: -180 },
+          { x: -120, y: -250 },
+          { x: -20, y: -192 },
+          { x: 80, y: -260 },
+          { x: 190, y: -205 },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'canyon_launch',
+    name: 'Canyon Launch',
+    difficulty: 'Medium',
+    description: 'Two linked jumps with a boost into a steep landing.',
+    recommendedRiderId: 'snowboarder',
+    lines: [
+      {
+        type: 'normal',
+        points: [
+          { x: -320, y: -20 },
+          { x: -240, y: -44 },
+          { x: -150, y: -60 },
+          { x: -70, y: -86 },
+          { x: 10, y: -120 },
+        ],
+      },
+      {
+        type: 'boost',
+        points: [
+          { x: 10, y: -120 },
+          { x: 70, y: -170 },
+          { x: 130, y: -120 },
+          { x: 200, y: -86 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 260, y: -58 },
+          { x: 360, y: -30 },
+          { x: 450, y: -48 },
+          { x: 520, y: -90 },
+          { x: 590, y: -155 },
+          { x: 680, y: -188 },
+        ],
+      },
+      {
+        type: 'brake',
+        points: [
+          { x: 680, y: -188 },
+          { x: 760, y: -220 },
+          { x: 860, y: -210 },
+        ],
+      },
+      {
+        type: 'scenery',
+        points: [
+          { x: 180, y: -6 },
+          { x: 250, y: -120 },
+          { x: 330, y: -14 },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'switchback_trial',
+    name: 'Switchback Trial',
+    difficulty: 'Hard',
+    description: 'Tight turns and speed checks built for demo challenges.',
+    recommendedRiderId: 'sled',
+    lines: [
+      {
+        type: 'normal',
+        points: [
+          { x: -260, y: 20 },
+          { x: -200, y: -35 },
+          { x: -130, y: -10 },
+          { x: -60, y: -76 },
+          { x: 25, y: -46 },
+          { x: 90, y: -130 },
+          { x: 165, y: -95 },
+        ],
+      },
+      {
+        type: 'brake',
+        points: [
+          { x: 165, y: -95 },
+          { x: 240, y: -145 },
+          { x: 315, y: -115 },
+        ],
+      },
+      {
+        type: 'boost',
+        points: [
+          { x: 315, y: -115 },
+          { x: 380, y: -185 },
+          { x: 455, y: -150 },
+          { x: 530, y: -205 },
+          { x: 620, y: -182 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 620, y: -182 },
+          { x: 705, y: -232 },
+          { x: 800, y: -215 },
+          { x: 905, y: -262 },
+        ],
+      },
+      {
+        type: 'scenery',
+        points: [
+          { x: -40, y: -170 },
+          { x: 45, y: -230 },
+          { x: 130, y: -176 },
+          { x: 220, y: -245 },
+          { x: 320, y: -190 },
+        ],
+      },
     ],
   },
 ];
@@ -481,6 +649,29 @@ function countTrackPoints(lines) {
   return lines.reduce((total, line) => total + linePoints(line).length, 0);
 }
 
+function buildPreviewPaths(lines, width, height, padding = 8) {
+  const bounds = getLinesBounds(lines);
+  if (!bounds) return [];
+
+  const drawW = Math.max(1, width - padding * 2);
+  const drawH = Math.max(1, height - padding * 2);
+  const trackW = Math.max(1, bounds.maxX - bounds.minX);
+  const trackH = Math.max(1, bounds.maxY - bounds.minY);
+  const scale = Math.min(drawW / trackW, drawH / trackH);
+  const offsetX = padding + (drawW - trackW * scale) / 2;
+  const offsetY = padding + (drawH - trackH * scale) / 2;
+
+  return lines
+    .map((line) => {
+      const pts = linePoints(line).map((p) => ({
+        x: offsetX + (p.x - bounds.minX) * scale,
+        y: offsetY + (p.y - bounds.minY) * scale,
+      }));
+      return { d: pointsToPath(pts), type: lineType(line) };
+    })
+    .filter((entry) => entry.d);
+}
+
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -510,6 +701,7 @@ function LineRider() {
   const [storePrices, setStorePrices] = useState({});
   const [showCharacterShop, setShowCharacterShop] = useState(false);
   const [showSaveSlots, setShowSaveSlots] = useState(false);
+  const [showDemoTracks, setShowDemoTracks] = useState(false);
   const [savedTrackSlots, setSavedTrackSlots] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, () => null));
   const [saveSlotNames, setSaveSlotNames] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, (_, index) => `Track ${index + 1}`));
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
@@ -692,7 +884,27 @@ function LineRider() {
     });
   }, [fitTrackInView, resetView, savedTrackSlots, stopPlay]);
 
+  const loadDemoTrack = useCallback((demoTrack) => {
+    if (!demoTrack?.lines?.length) return;
+    stopPlay();
+    const nextLines = JSON.parse(JSON.stringify(demoTrack.lines));
+    linesRef.current = nextLines;
+    setLines(nextLines);
+    setCurrentStroke([]);
+    setTool('draw');
+    setShowDemoTracks(false);
+    if (demoTrack.recommendedRiderId && ownedRiders.includes(demoTrack.recommendedRiderId)) {
+      setActiveRiderId(demoTrack.recommendedRiderId);
+    }
+    requestAnimationFrame(() => {
+      resetView();
+      requestAnimationFrame(() => fitTrackInView());
+    });
+  }, [fitTrackInView, ownedRiders, resetView, stopPlay]);
+
   useEffect(() => {
+    if (!CHARACTER_SHOP_ENABLED) return;
+
     let mounted = true;
     let purchaseSub;
     let errorSub;
@@ -933,7 +1145,8 @@ function LineRider() {
       const c = camRef.current;
       const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camStartRef.current.zoom * e.scale));
       // Zoom toward center of screen
-      const cx = SW / 2, cy = CANVAS_H / 2;
+      const cx = canvasSize.width / 2;
+      const cy = canvasSize.height / 2;
       const ratio = newZoom / camStartRef.current.zoom;
       c.x = cx - ratio * (cx - camStartRef.current.x);
       c.y = cy - ratio * (cy - camStartRef.current.y);
@@ -1274,7 +1487,7 @@ function LineRider() {
                 <Stop offset="1" stopColor="#1a1a2e" />
               </LinearGradient>
             </Defs>
-            <Rect x="0" y="0" width={SW} height={CANVAS_H} fill="url(#bg)" />
+            <Rect x="0" y="0" width={canvasSize.width} height={canvasSize.height} fill="url(#bg)" />
 
             <G translateX={cam.x} translateY={cam.y} scale={cam.zoom}>
               {/* Track */}
@@ -1335,9 +1548,14 @@ function LineRider() {
           {/* Top controls overlay */}
           <View style={s.topCanvasRow}>
             {!playing ? (
-              <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowSaveSlots(true)}>
-                <Text style={s.zoomBtnTextSmall}>SAVES</Text>
-              </TouchableOpacity>
+              <View style={s.topCanvasActions}>
+                <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowDemoTracks(true)}>
+                  <Text style={s.zoomBtnTextSmall}>DEMOS</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowSaveSlots(true)}>
+                  <Text style={s.zoomBtnTextSmall}>SAVES</Text>
+                </TouchableOpacity>
+              </View>
             ) : <View />}
 
             <View style={s.zoomBar}>
@@ -1438,7 +1656,7 @@ function LineRider() {
             </View>
           )}
 
-          {!playing && (
+          {CHARACTER_SHOP_ENABLED && !playing && (
             <TouchableOpacity
               style={s.charactersFab}
               onPress={() => setShowCharacterShop(true)}
@@ -1506,76 +1724,142 @@ function LineRider() {
       </Modal>
 
       <Modal
-        visible={showCharacterShop}
+        visible={showDemoTracks}
         animationType="slide"
         transparent
-        onRequestClose={() => setShowCharacterShop(false)}
+        onRequestClose={() => setShowDemoTracks(false)}
       >
         <View style={s.shopBackdrop}>
           <View style={s.shopSheet}>
             <View style={s.shopHeader}>
               <View>
-                <Text style={s.shopTitle}>Character Shop</Text>
-                <Text style={s.shopSubtitle}>Choose who rides next</Text>
+                <Text style={s.shopTitle}>Demo Tracks</Text>
+                <Text style={s.shopSubtitle}>Curated runs you can load and ride instantly</Text>
               </View>
-              <TouchableOpacity onPress={() => setShowCharacterShop(false)} style={s.shopCloseBtn}>
+              <TouchableOpacity onPress={() => setShowDemoTracks(false)} style={s.shopCloseBtn}>
                 <Text style={s.shopCloseText}>Done</Text>
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity onPress={restoreRiderPurchases}>
-              <Text style={s.restoreLink}>Restore Purchases</Text>
-            </TouchableOpacity>
-
             <ScrollView contentContainerStyle={s.shopList}>
-              {RIDER_TYPES.map((rt) => {
-                const owned = ownedRiders.includes(rt.id);
-                const active = activeRiderId === rt.id;
+              {DEMO_TRACK_LIBRARY.map((demoTrack) => {
+                const previewPaths = buildPreviewPaths(demoTrack.lines, 120, 70, 8);
+                const recommended = riderConfig(demoTrack.recommendedRiderId).name;
                 return (
-                  <TouchableOpacity
-                    key={rt.id}
-                    style={[s.riderCard, s.shopCard, active && s.riderCardActive]}
-                    onPress={() => activateOrPurchaseRider(rt.id)}
-                    disabled={purchaseBusyId === rt.id}
-                  >
-                    <View style={s.shopMedia}>
-                      <View style={[s.shopImageBadge, { borderColor: rt.color, backgroundColor: `${rt.color}22` }]}>
-                        <Text style={s.shopIcon}>{rt.icon || '⛷'}</Text>
-                      </View>
+                  <View key={demoTrack.id} style={s.demoCard}>
+                    <View style={s.demoPreviewWrap}>
+                      <Svg width={120} height={70}>
+                        <Rect x={0} y={0} width={120} height={70} rx={10} fill="rgba(9,14,28,0.95)" />
+                        {previewPaths.map((entry, index) => {
+                          const cfg = lineTypeConfig(entry.type);
+                          return (
+                            <Path
+                              key={`${demoTrack.id}-preview-${index}`}
+                              d={entry.d}
+                              stroke={cfg.color}
+                              strokeWidth={2.1}
+                              fill="none"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          );
+                        })}
+                      </Svg>
                     </View>
 
-                    <View style={s.shopDetails}>
-                      <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
-                      <Text style={s.shopBlurb}>{rt.blurb}</Text>
-                      <Text style={s.riderMeta}>TOP {rt.topSpeed} • LAUNCH {rt.launchSpeed.toFixed(1)}</Text>
-                      <Text style={s.riderPrice}>
-                        {owned
-                          ? (active ? 'Selected' : 'Owned')
-                          : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
-                      </Text>
+                    <View style={s.demoMeta}>
+                      <View style={s.demoHeaderRow}>
+                        <Text style={s.demoTitle}>{demoTrack.name}</Text>
+                        <Text style={s.demoDifficulty}>{demoTrack.difficulty}</Text>
+                      </View>
+                      <Text style={s.demoDescription}>{demoTrack.description}</Text>
+                      <Text style={s.demoSubline}>Recommended: {recommended}</Text>
                     </View>
-                  </TouchableOpacity>
+
+                    <TouchableOpacity style={s.demoLoadBtn} onPress={() => loadDemoTrack(demoTrack)}>
+                      <Text style={s.demoLoadBtnText}>Load</Text>
+                    </TouchableOpacity>
+                  </View>
                 );
               })}
             </ScrollView>
-
-            <View style={s.debugPanel}>
-              <Text style={s.debugTitle}>IAP Debug</Text>
-              <Text style={s.debugText}>Store: {storeReady ? '✓ Ready' : '⊗ Offline'}</Text>
-              <Text style={s.debugText}>Active: {activeRiderCfg.name}</Text>
-              <Text style={s.debugText}>Owned: {ownedRiders.join(', ') || 'none'}</Text>
-              {Object.keys(paymentLedger).length > 0 && (
-                <Text style={s.debugText}>
-                  Ledger: {Object.entries(paymentLedger)
-                    .slice(-2)
-                    .map(([id, tx]) => `${id}#${(tx.transactionId || 'pending').slice(-4)}`)
-                    .join(' | ')}
-                </Text>
-              )}
-            </View>
           </View>
         </View>
       </Modal>
+
+      {CHARACTER_SHOP_ENABLED && (
+        <Modal
+          visible={showCharacterShop}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setShowCharacterShop(false)}
+        >
+          <View style={s.shopBackdrop}>
+            <View style={s.shopSheet}>
+              <View style={s.shopHeader}>
+                <View>
+                  <Text style={s.shopTitle}>Character Shop</Text>
+                  <Text style={s.shopSubtitle}>Choose who rides next</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowCharacterShop(false)} style={s.shopCloseBtn}>
+                  <Text style={s.shopCloseText}>Done</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity onPress={restoreRiderPurchases}>
+                <Text style={s.restoreLink}>Restore Purchases</Text>
+              </TouchableOpacity>
+
+              <ScrollView contentContainerStyle={s.shopList}>
+                {RIDER_TYPES.map((rt) => {
+                  const owned = ownedRiders.includes(rt.id);
+                  const active = activeRiderId === rt.id;
+                  return (
+                    <TouchableOpacity
+                      key={rt.id}
+                      style={[s.riderCard, s.shopCard, active && s.riderCardActive]}
+                      onPress={() => activateOrPurchaseRider(rt.id)}
+                      disabled={purchaseBusyId === rt.id}
+                    >
+                      <View style={s.shopMedia}>
+                        <View style={[s.shopImageBadge, { borderColor: rt.color, backgroundColor: `${rt.color}22` }]}>
+                          <Text style={s.shopIcon}>{rt.icon || '⛷'}</Text>
+                        </View>
+                      </View>
+
+                      <View style={s.shopDetails}>
+                        <Text style={[s.riderName, active && s.riderNameActive]}>{rt.name}</Text>
+                        <Text style={s.shopBlurb}>{rt.blurb}</Text>
+                        <Text style={s.riderMeta}>TOP {rt.topSpeed} • LAUNCH {rt.launchSpeed.toFixed(1)}</Text>
+                        <Text style={s.riderPrice}>
+                          {owned
+                            ? (active ? 'Selected' : 'Owned')
+                            : (purchaseBusyId === rt.id ? 'Purchasing...' : (storePrices[rt.productId] || '$1.00'))}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <View style={s.debugPanel}>
+                <Text style={s.debugTitle}>IAP Debug</Text>
+                <Text style={s.debugText}>Store: {storeReady ? '✓ Ready' : '⊗ Offline'}</Text>
+                <Text style={s.debugText}>Active: {activeRiderCfg.name}</Text>
+                <Text style={s.debugText}>Owned: {ownedRiders.join(', ') || 'none'}</Text>
+                {Object.keys(paymentLedger).length > 0 && (
+                  <Text style={s.debugText}>
+                    Ledger: {Object.entries(paymentLedger)
+                      .slice(-2)
+                      .map(([id, tx]) => `${id}#${(tx.transactionId || 'pending').slice(-4)}`)
+                      .join(' | ')}
+                  </Text>
+                )}
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
     </View>
   );
 }
@@ -1679,6 +1963,7 @@ const s = StyleSheet.create({
   // Zoom
   topCanvasRow: { position: 'absolute', top: 10, left: 10, right: 10, flexDirection: 'row', alignItems: 'center',
     justifyContent: 'space-between' },
+  topCanvasActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   zoomBar: { flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(10,10,26,0.9)', borderWidth: 1, borderColor: 'rgba(0,255,200,0.15)',
     borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3, gap: 5 },
@@ -1714,4 +1999,17 @@ const s = StyleSheet.create({
     borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
     backgroundColor: 'rgba(16,28,58,0.94)', borderWidth: 1, borderColor: 'rgba(124,226,255,0.45)' },
   charactersFabText: { color: '#dff7ff', fontSize: 12, fontWeight: '800', letterSpacing: 0.4 },
+  demoCard: { borderRadius: 12, borderWidth: 1, borderColor: 'rgba(124,226,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  demoPreviewWrap: { borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  demoMeta: { flex: 1 },
+  demoHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  demoTitle: { color: '#dff7ff', fontSize: 13, fontWeight: '800' },
+  demoDifficulty: { color: '#7ce2ff', fontSize: 10, fontWeight: '800', letterSpacing: 0.4,
+    borderWidth: 1, borderColor: 'rgba(124,226,255,0.3)', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
+  demoDescription: { color: 'rgba(223,247,255,0.72)', fontSize: 11, marginTop: 5 },
+  demoSubline: { color: 'rgba(223,247,255,0.45)', fontSize: 10, marginTop: 3 },
+  demoLoadBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1,
+    borderColor: 'rgba(0,255,200,0.45)', backgroundColor: 'rgba(0,255,200,0.14)' },
+  demoLoadBtnText: { color: '#dff7ff', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
 });
