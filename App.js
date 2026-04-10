@@ -13,6 +13,7 @@ import {
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Audio } from 'expo-av';
 import * as RNIap from 'react-native-iap';
 import Svg, {
   Path, Circle, G, Line, Rect, Polygon,
@@ -43,6 +44,7 @@ const NO_LANDING_WIPEOUT_DELAY_MS = 1400;
 const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
 const TRACK_SAVE_SLOT_COUNT = 3;
 const CHARACTER_SHOP_ENABLED = false;
+const BOOST_SFX_COOLDOWN_MS = 180;
 
 const RIDER_TYPES = [
   {
@@ -229,49 +231,50 @@ const DEMO_TRACK_LIBRARY = [
     id: 'glacier_cruise',
     name: 'Glacier Cruise',
     difficulty: 'Easy',
-    description: 'Long flowing descent with forgiving rollers.',
+    description: 'Long scenic downhill with gentle rollers and a clean finish.',
     recommendedRiderId: 'classic',
     lines: [
       {
         type: 'normal',
         points: [
-          { x: -360, y: -40 },
-          { x: -300, y: -52 },
-          { x: -240, y: -72 },
-          { x: -160, y: -95 },
-          { x: -60, y: -120 },
-          { x: 40, y: -148 },
-          { x: 150, y: -170 },
-          { x: 250, y: -188 },
-          { x: 350, y: -208 },
+          { x: -380, y: -150 },
+          { x: -320, y: -138 },
+          { x: -250, y: -112 },
+          { x: -165, y: -82 },
+          { x: -70, y: -44 },
+          { x: 30, y: -18 },
+          { x: 140, y: 20 },
+          { x: 255, y: 52 },
+          { x: 350, y: 82 },
         ],
       },
       {
         type: 'boost',
         points: [
-          { x: 350, y: -208 },
-          { x: 430, y: -245 },
-          { x: 520, y: -266 },
-          { x: 620, y: -285 },
+          { x: 350, y: 82 },
+          { x: 440, y: 108 },
+          { x: 540, y: 132 },
+          { x: 640, y: 170 },
         ],
       },
       {
         type: 'normal',
         points: [
-          { x: 620, y: -285 },
-          { x: 730, y: -320 },
-          { x: 860, y: -330 },
-          { x: 980, y: -300 },
+          { x: 640, y: 170 },
+          { x: 760, y: 214 },
+          { x: 880, y: 248 },
+          { x: 1010, y: 290 },
+          { x: 1150, y: 330 },
         ],
       },
       {
         type: 'scenery',
         points: [
-          { x: -220, y: -180 },
-          { x: -120, y: -250 },
-          { x: -20, y: -192 },
-          { x: 80, y: -260 },
-          { x: 190, y: -205 },
+          { x: -260, y: -260 },
+          { x: -170, y: -320 },
+          { x: -70, y: -268 },
+          { x: 40, y: -330 },
+          { x: 160, y: -280 },
         ],
       },
     ],
@@ -280,53 +283,66 @@ const DEMO_TRACK_LIBRARY = [
     id: 'canyon_launch',
     name: 'Canyon Launch',
     difficulty: 'Medium',
-    description: 'Two linked jumps with a boost into a steep landing.',
+    description: 'Layered canyon run with linked ramps, speed lanes, and recoveries.',
     recommendedRiderId: 'snowboarder',
     lines: [
       {
         type: 'normal',
         points: [
-          { x: -320, y: -20 },
-          { x: -240, y: -44 },
+          { x: -360, y: -140 },
+          { x: -300, y: -122 },
+          { x: -230, y: -96 },
           { x: -150, y: -60 },
-          { x: -70, y: -86 },
-          { x: 10, y: -120 },
+          { x: -70, y: -20 },
+          { x: 20, y: 30 },
         ],
       },
       {
         type: 'boost',
         points: [
-          { x: 10, y: -120 },
-          { x: 70, y: -170 },
-          { x: 130, y: -120 },
-          { x: 200, y: -86 },
+          { x: 20, y: 30 },
+          { x: 110, y: 74 },
+          { x: 205, y: 124 },
+          { x: 290, y: 96 },
+          { x: 360, y: 138 },
         ],
       },
       {
         type: 'normal',
         points: [
-          { x: 260, y: -58 },
-          { x: 360, y: -30 },
-          { x: 450, y: -48 },
-          { x: 520, y: -90 },
-          { x: 590, y: -155 },
-          { x: 680, y: -188 },
+          { x: 360, y: 138 },
+          { x: 440, y: 188 },
+          { x: 525, y: 154 },
+          { x: 610, y: 220 },
+          { x: 700, y: 270 },
+          { x: 800, y: 314 },
         ],
       },
       {
         type: 'brake',
         points: [
-          { x: 680, y: -188 },
-          { x: 760, y: -220 },
-          { x: 860, y: -210 },
+          { x: 800, y: 314 },
+          { x: 910, y: 346 },
+          { x: 1015, y: 338 },
+          { x: 1110, y: 368 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 1110, y: 368 },
+          { x: 1240, y: 410 },
+          { x: 1360, y: 448 },
         ],
       },
       {
         type: 'scenery',
         points: [
-          { x: 180, y: -6 },
-          { x: 250, y: -120 },
-          { x: 330, y: -14 },
+          { x: 70, y: -80 },
+          { x: 150, y: -210 },
+          { x: 230, y: -86 },
+          { x: 330, y: -246 },
+          { x: 410, y: -120 },
         ],
       },
     ],
@@ -335,56 +351,70 @@ const DEMO_TRACK_LIBRARY = [
     id: 'switchback_trial',
     name: 'Switchback Trial',
     difficulty: 'Hard',
-    description: 'Tight turns and speed checks built for demo challenges.',
+    description: 'Complex technical descent with switchbacks and timed boost/brake zones.',
     recommendedRiderId: 'sled',
     lines: [
       {
         type: 'normal',
         points: [
-          { x: -260, y: 20 },
-          { x: -200, y: -35 },
-          { x: -130, y: -10 },
-          { x: -60, y: -76 },
-          { x: 25, y: -46 },
-          { x: 90, y: -130 },
-          { x: 165, y: -95 },
+          { x: -350, y: -90 },
+          { x: -290, y: -76 },
+          { x: -230, y: -40 },
+          { x: -170, y: -8 },
+          { x: -100, y: 34 },
+          { x: -30, y: 74 },
+          { x: 45, y: 124 },
+          { x: 120, y: 170 },
         ],
       },
       {
         type: 'brake',
         points: [
-          { x: 165, y: -95 },
-          { x: 240, y: -145 },
-          { x: 315, y: -115 },
+          { x: 120, y: 170 },
+          { x: 195, y: 142 },
+          { x: 280, y: 210 },
+          { x: 360, y: 184 },
         ],
       },
       {
         type: 'boost',
         points: [
-          { x: 315, y: -115 },
-          { x: 380, y: -185 },
-          { x: 455, y: -150 },
-          { x: 530, y: -205 },
-          { x: 620, y: -182 },
+          { x: 360, y: 184 },
+          { x: 450, y: 242 },
+          { x: 540, y: 214 },
+          { x: 635, y: 288 },
+          { x: 730, y: 250 },
+          { x: 820, y: 318 },
         ],
       },
       {
         type: 'normal',
         points: [
-          { x: 620, y: -182 },
-          { x: 705, y: -232 },
-          { x: 800, y: -215 },
-          { x: 905, y: -262 },
+          { x: 820, y: 318 },
+          { x: 910, y: 372 },
+          { x: 1000, y: 340 },
+          { x: 1110, y: 412 },
+          { x: 1230, y: 390 },
+          { x: 1360, y: 462 },
+        ],
+      },
+      {
+        type: 'brake',
+        points: [
+          { x: 1360, y: 462 },
+          { x: 1480, y: 500 },
+          { x: 1600, y: 490 },
         ],
       },
       {
         type: 'scenery',
         points: [
-          { x: -40, y: -170 },
-          { x: 45, y: -230 },
-          { x: 130, y: -176 },
-          { x: 220, y: -245 },
-          { x: 320, y: -190 },
+          { x: -120, y: -230 },
+          { x: -20, y: -310 },
+          { x: 90, y: -250 },
+          { x: 190, y: -330 },
+          { x: 300, y: -262 },
+          { x: 420, y: -340 },
         ],
       },
     ],
@@ -719,6 +749,10 @@ function LineRider() {
   const noLandingSinceRef = useRef(null);
   const animRef = useRef(null);
   const frameCountRef = useRef(0);
+  const soundRefs = useRef({ play: null, boost: null, crash: null });
+  const soundReadyRef = useRef(false);
+  const crashSoundPlayedRef = useRef(false);
+  const lastBoostSoundAtRef = useRef(0);
 
   useEffect(() => { linesRef.current = lines; }, [lines]);
 
@@ -744,6 +778,64 @@ function LineRider() {
 
     loadSavedTrackSlots();
     return () => { mounted = false; };
+  }, []);
+
+  const playSfx = useCallback(async (soundId) => {
+    const sound = soundRefs.current[soundId];
+    if (!soundReadyRef.current || !sound) return;
+    try {
+      await sound.replayAsync();
+    } catch (_) {
+      // SFX errors should not interrupt gameplay.
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadSfx = async () => {
+      try {
+        await Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          shouldDuckAndroid: true,
+          staysActiveInBackground: false,
+        });
+
+        const [playSound, boostSound, crashSound] = await Promise.all([
+          Audio.Sound.createAsync(require('./assets/sfx/play.wav'), { volume: 0.48 }),
+          Audio.Sound.createAsync(require('./assets/sfx/boost.wav'), { volume: 0.42 }),
+          Audio.Sound.createAsync(require('./assets/sfx/crash.wav'), { volume: 0.58 }),
+        ]);
+
+        if (!mounted) {
+          await Promise.all([
+            playSound.sound.unloadAsync(),
+            boostSound.sound.unloadAsync(),
+            crashSound.sound.unloadAsync(),
+          ]);
+          return;
+        }
+
+        soundRefs.current = {
+          play: playSound.sound,
+          boost: boostSound.sound,
+          crash: crashSound.sound,
+        };
+        soundReadyRef.current = true;
+      } catch (_) {
+        soundReadyRef.current = false;
+      }
+    };
+
+    loadSfx();
+    return () => {
+      mounted = false;
+      soundReadyRef.current = false;
+      Object.values(soundRefs.current).forEach((sound) => {
+        sound?.unloadAsync?.().catch(() => {});
+      });
+      soundRefs.current = { play: null, boost: null, crash: null };
+    };
   }, []);
 
   const persistTrackSlots = useCallback(async (slots) => {
@@ -1179,8 +1271,11 @@ function LineRider() {
     noLandingSinceRef.current = null;
     setCrashReason('wipeout');
     setCrashed(false);
+    crashSoundPlayedRef.current = false;
+    lastBoostSoundAtRef.current = 0;
     setPlaying(true);
-  }, [activeRiderId, lines]);
+    playSfx('play');
+  }, [activeRiderId, lines, playSfx]);
 
   const stopPlay = useCallback(() => {
     setPlaying(false);
@@ -1193,6 +1288,8 @@ function LineRider() {
     setTrail([]);
     setCrashReason('wipeout');
     setCrashed(false);
+    crashSoundPlayedRef.current = false;
+    lastBoostSoundAtRef.current = 0;
   }, []);
 
   /* ══════════ PHYSICS LOOP ══════════ */
@@ -1251,6 +1348,13 @@ function LineRider() {
                     r.vy *= scale;
                   }
                 }
+                if (cfg.id === 'boost') {
+                  const now = Date.now();
+                  if (now - lastBoostSoundAtRef.current >= BOOST_SFX_COOLDOWN_MS) {
+                    lastBoostSoundAtRef.current = now;
+                    playSfx('boost');
+                  }
+                }
                 r.angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
                 grounded = true;
               }
@@ -1281,6 +1385,10 @@ function LineRider() {
             r.crashed = true;
             setCrashReason('wipeout');
             setCrashed(true);
+            if (!crashSoundPlayedRef.current) {
+              crashSoundPlayedRef.current = true;
+              playSfx('crash');
+            }
           }
         } else {
           noLandingSinceRef.current = null;
@@ -1293,6 +1401,10 @@ function LineRider() {
             r.crashed = true;
             setCrashReason('stalled');
             setCrashed(true);
+            if (!crashSoundPlayedRef.current) {
+              crashSoundPlayedRef.current = true;
+              playSfx('crash');
+            }
           }
         } else {
           stallSinceRef.current = null;
@@ -1320,7 +1432,7 @@ function LineRider() {
     frameCountRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [activeRiderId, canvasSize.height, canvasSize.width, playing]);
+  }, [activeRiderId, canvasSize.height, canvasSize.width, playSfx, playing]);
 
   const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };
