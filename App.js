@@ -13,6 +13,7 @@ import {
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NativeModulesProxy } from 'expo-modules-core';
 import * as RNIap from 'react-native-iap';
 import Svg, {
   Path, Circle, G, Line, Rect, Polygon,
@@ -752,6 +753,7 @@ function LineRider() {
   const soundReadyRef = useRef(false);
   const soundInitStartedRef = useRef(false);
   const soundModuleRef = useRef(null);
+  const soundUnavailableRef = useRef(false);
   const crashSoundPlayedRef = useRef(false);
   const lastBoostSoundAtRef = useRef(0);
 
@@ -782,8 +784,15 @@ function LineRider() {
   }, []);
 
   const ensureSfxReady = useCallback(async () => {
+    if (soundUnavailableRef.current) return false;
     if (soundReadyRef.current) return true;
     if (soundInitStartedRef.current) return false;
+
+    // Prevents play-time crashes when native audio pods are missing/stale.
+    if (!NativeModulesProxy?.EXAV) {
+      soundUnavailableRef.current = true;
+      return false;
+    }
 
     soundInitStartedRef.current = true;
     try {
@@ -815,6 +824,7 @@ function LineRider() {
       soundReadyRef.current = false;
       soundModuleRef.current = null;
       soundInitStartedRef.current = false;
+      soundUnavailableRef.current = true;
       return false;
     }
   }, []);
@@ -837,6 +847,7 @@ function LineRider() {
     soundReadyRef.current = false;
     soundInitStartedRef.current = false;
     soundModuleRef.current = null;
+    soundUnavailableRef.current = false;
     Object.values(soundRefs.current).forEach((sound) => {
       sound?.unloadAsync?.().catch(() => {});
     });
