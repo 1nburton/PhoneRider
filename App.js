@@ -13,7 +13,6 @@ import {
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { NativeModulesProxy } from 'expo-modules-core';
 import * as RNIap from 'react-native-iap';
 import Svg, {
   Path, Circle, G, Line, Rect, Polygon,
@@ -44,7 +43,6 @@ const NO_LANDING_WIPEOUT_DELAY_MS = 1400;
 const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
 const TRACK_SAVE_SLOT_COUNT = 3;
 const CHARACTER_SHOP_ENABLED = false;
-const BOOST_SFX_COOLDOWN_MS = 180;
 
 const RIDER_TYPES = [
   {
@@ -749,13 +747,6 @@ function LineRider() {
   const noLandingSinceRef = useRef(null);
   const animRef = useRef(null);
   const frameCountRef = useRef(0);
-  const soundRefs = useRef({ play: null, boost: null, crash: null });
-  const soundReadyRef = useRef(false);
-  const soundInitStartedRef = useRef(false);
-  const soundModuleRef = useRef(null);
-  const soundUnavailableRef = useRef(false);
-  const crashSoundPlayedRef = useRef(false);
-  const lastBoostSoundAtRef = useRef(0);
 
   useEffect(() => { linesRef.current = lines; }, [lines]);
 
@@ -781,77 +772,6 @@ function LineRider() {
 
     loadSavedTrackSlots();
     return () => { mounted = false; };
-  }, []);
-
-  const ensureSfxReady = useCallback(async () => {
-    if (soundUnavailableRef.current) return false;
-    if (soundReadyRef.current) return true;
-    if (soundInitStartedRef.current) return false;
-
-    // Prevents play-time crashes when native audio pods are missing/stale.
-    if (!NativeModulesProxy?.EXAV) {
-      soundUnavailableRef.current = true;
-      return false;
-    }
-
-    soundInitStartedRef.current = true;
-    try {
-      const expoAv = await import('expo-av');
-      const Audio = expoAv?.Audio;
-      if (!Audio) throw new Error('Audio module unavailable');
-      soundModuleRef.current = Audio;
-
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        shouldDuckAndroid: true,
-        staysActiveInBackground: false,
-      });
-
-      const [playSound, boostSound, crashSound] = await Promise.all([
-        Audio.Sound.createAsync(require('./assets/sfx/play.wav'), { volume: 0.48 }),
-        Audio.Sound.createAsync(require('./assets/sfx/boost.wav'), { volume: 0.42 }),
-        Audio.Sound.createAsync(require('./assets/sfx/crash.wav'), { volume: 0.58 }),
-      ]);
-
-      soundRefs.current = {
-        play: playSound.sound,
-        boost: boostSound.sound,
-        crash: crashSound.sound,
-      };
-      soundReadyRef.current = true;
-      return true;
-    } catch (_) {
-      soundReadyRef.current = false;
-      soundModuleRef.current = null;
-      soundInitStartedRef.current = false;
-      soundUnavailableRef.current = true;
-      return false;
-    }
-  }, []);
-
-  const playSfx = useCallback(async (soundId) => {
-    if (!soundReadyRef.current) {
-      const ready = await ensureSfxReady();
-      if (!ready) return;
-    }
-    const sound = soundRefs.current[soundId];
-    if (!sound) return;
-    try {
-      await sound.replayAsync();
-    } catch (_) {
-      // SFX errors should not interrupt gameplay.
-    }
-  }, [ensureSfxReady]);
-
-  useEffect(() => () => {
-    soundReadyRef.current = false;
-    soundInitStartedRef.current = false;
-    soundModuleRef.current = null;
-    soundUnavailableRef.current = false;
-    Object.values(soundRefs.current).forEach((sound) => {
-      sound?.unloadAsync?.().catch(() => {});
-    });
-    soundRefs.current = { play: null, boost: null, crash: null };
   }, []);
 
   const persistTrackSlots = useCallback(async (slots) => {
@@ -1001,14 +921,11 @@ function LineRider() {
     setCurrentStroke([]);
     setTool('draw');
     setShowDemoTracks(false);
-    if (demoTrack.recommendedRiderId && ownedRiders.includes(demoTrack.recommendedRiderId)) {
-      setActiveRiderId(demoTrack.recommendedRiderId);
-    }
     requestAnimationFrame(() => {
       resetView();
       requestAnimationFrame(() => fitTrackInView());
     });
-  }, [fitTrackInView, ownedRiders, resetView, stopPlay]);
+  }, [fitTrackInView, resetView, stopPlay]);
 
   useEffect(() => {
     if (!CHARACTER_SHOP_ENABLED) return;
@@ -1287,11 +1204,8 @@ function LineRider() {
     noLandingSinceRef.current = null;
     setCrashReason('wipeout');
     setCrashed(false);
-    crashSoundPlayedRef.current = false;
-    lastBoostSoundAtRef.current = 0;
     setPlaying(true);
-    playSfx('play');
-  }, [activeRiderId, lines, playSfx]);
+  }, [activeRiderId, lines]);
 
   const stopPlay = useCallback(() => {
     setPlaying(false);
@@ -1304,8 +1218,6 @@ function LineRider() {
     setTrail([]);
     setCrashReason('wipeout');
     setCrashed(false);
-    crashSoundPlayedRef.current = false;
-    lastBoostSoundAtRef.current = 0;
   }, []);
 
   /* ══════════ PHYSICS LOOP ══════════ */
@@ -1364,13 +1276,6 @@ function LineRider() {
                     r.vy *= scale;
                   }
                 }
-                if (cfg.id === 'boost') {
-                  const now = Date.now();
-                  if (now - lastBoostSoundAtRef.current >= BOOST_SFX_COOLDOWN_MS) {
-                    lastBoostSoundAtRef.current = now;
-                    playSfx('boost');
-                  }
-                }
                 r.angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
                 grounded = true;
               }
@@ -1401,10 +1306,6 @@ function LineRider() {
             r.crashed = true;
             setCrashReason('wipeout');
             setCrashed(true);
-            if (!crashSoundPlayedRef.current) {
-              crashSoundPlayedRef.current = true;
-              playSfx('crash');
-            }
           }
         } else {
           noLandingSinceRef.current = null;
@@ -1417,10 +1318,6 @@ function LineRider() {
             r.crashed = true;
             setCrashReason('stalled');
             setCrashed(true);
-            if (!crashSoundPlayedRef.current) {
-              crashSoundPlayedRef.current = true;
-              playSfx('crash');
-            }
           }
         } else {
           stallSinceRef.current = null;
@@ -1448,7 +1345,7 @@ function LineRider() {
     frameCountRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [activeRiderId, canvasSize.height, canvasSize.width, playSfx, playing]);
+  }, [activeRiderId, canvasSize.height, canvasSize.width, playing]);
 
   const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };

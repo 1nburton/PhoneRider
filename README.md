@@ -16,4 +16,3 @@ PhoneRider is an Expo React Native project based on a Line Rider style outline.
 - Play/Stop controls in toolbar
 - Demo tracks: tap DEMOS to load curated prebuilt runs
 - Save slots: tap SAVES to store and reload local tracks
-- Sound effects: play start, boost contact, and wipeout cues
