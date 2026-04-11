@@ -700,6 +700,18 @@ function buildPreviewPaths(lines, width, height, padding = 8) {
     .filter((entry) => entry.d);
 }
 
+function demoTrackFromSavedSlot(slot) {
+  if (!slot?.lines?.length) return null;
+  return {
+    id: 'drop_off',
+    name: slot.name?.trim() || 'Drop off',
+    difficulty: 'Featured',
+    description: 'Community drop rebuilt from saved track.',
+    recommendedRiderId: 'classic',
+    lines: JSON.parse(JSON.stringify(slot.lines)),
+  };
+}
+
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -1389,6 +1401,9 @@ function LineRider() {
   const zoomPct = Math.round(cam.zoom * 100);
   const activeRiderCfg = riderConfig(activeRiderId);
   const currentRiderCfg = rider ? riderConfig(rider.riderTypeId || activeRiderId) : activeRiderCfg;
+  const dropOffSlot = savedTrackSlots.find((slot) => slot?.name?.trim?.().toLowerCase() === 'drop off');
+  const dropOffDemoTrack = demoTrackFromSavedSlot(dropOffSlot);
+  const demoTracks = dropOffDemoTrack ? [dropOffDemoTrack] : DEMO_TRACK_LIBRARY;
   const rAngle = rider
     ? (rider.onGround ? rider.angle : Math.atan2(rider.vy || 0, rider.vx || 0)) * (180 / Math.PI)
     : 0;
@@ -1767,7 +1782,7 @@ function LineRider() {
             </View>
 
             <ScrollView contentContainerStyle={s.shopList}>
-              {DEMO_TRACK_LIBRARY.map((demoTrack) => {
+              {demoTracks.map((demoTrack) => {
                 const previewPaths = buildPreviewPaths(demoTrack.lines, 120, 70, 8);
                 const recommended = riderConfig(demoTrack.recommendedRiderId).name;
                 return (
