@@ -51,6 +51,8 @@ const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
 const TRACK_SAVE_SLOT_COUNT = 3;
 const AD_PLAY_COUNT_STORAGE_KEY = 'phone-rider-ad-play-count-v1';
 const AD_PLAY_FREQUENCY = 5;
+const AD_LOAD_WAIT_MS = 2800;
+const AD_LOAD_POLL_MS = 120;
 const ADMOB_TEST_INTERSTITIAL_IDS = {
   ios: 'ca-app-pub-3940256099942544/4411468910',
   android: 'ca-app-pub-3940256099942544/1033173712',
@@ -299,74 +301,157 @@ const DEMO_TRACK_LIBRARY = [
     id: 'drop_off',
     name: 'Drop off',
     difficulty: 'Featured',
-    description: 'Steep starter drop with a soft landing and a long runout.',
+    description: 'A huge showcase run with drops, boosts, air time, a trampoline, and a portal replay finish.',
     recommendedRiderId: 'classic',
     lines: [
       {
         type: 'normal',
         points: [
-          { x: -430, y: -240 },
-          { x: -360, y: -220 },
-          { x: -300, y: -178 },
-          { x: -250, y: -105 },
-          { x: -210, y: 4 },
-          { x: -170, y: 130 },
-          { x: -125, y: 232 },
+          { x: -700, y: -380 },
+          { x: -620, y: -350 },
+          { x: -548, y: -285 },
+          { x: -492, y: -178 },
+          { x: -446, y: -42 },
+          { x: -396, y: 105 },
+          { x: -328, y: 220 },
+          { x: -236, y: 292 },
         ],
       },
       {
         type: 'boost',
         points: [
-          { x: -125, y: 232 },
-          { x: -40, y: 280 },
-          { x: 62, y: 292 },
-          { x: 178, y: 276 },
+          { x: -236, y: 292 },
+          { x: -104, y: 330 },
+          { x: 48, y: 338 },
+          { x: 208, y: 318 },
+          { x: 354, y: 278 },
         ],
       },
       {
         type: 'normal',
         points: [
-          { x: 178, y: 276 },
-          { x: 300, y: 250 },
-          { x: 430, y: 246 },
-          { x: 560, y: 276 },
-          { x: 700, y: 304 },
-          { x: 850, y: 306 },
+          { x: 354, y: 278 },
+          { x: 500, y: 226 },
+          { x: 650, y: 206 },
+          { x: 790, y: 232 },
+          { x: 914, y: 284 },
+          { x: 1032, y: 340 },
+          { x: 1168, y: 368 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 1168, y: 368 },
+          { x: 1286, y: 360 },
+          { x: 1398, y: 328 },
+          { x: 1512, y: 322 },
+          { x: 1626, y: 354 },
+        ],
+      },
+      {
+        type: 'boost',
+        points: [
+          { x: 1626, y: 354 },
+          { x: 1740, y: 414 },
+          { x: 1865, y: 468 },
+          { x: 2000, y: 496 },
+          { x: 2146, y: 486 },
+          { x: 2282, y: 444 },
         ],
       },
       {
         type: 'trampoline',
         points: [
-          { x: 850, y: 306 },
-          { x: 900, y: 322 },
-          { x: 960, y: 322 },
-          { x: 1015, y: 304 },
+          { x: 2282, y: 444 },
+          { x: 2348, y: 428 },
+          { x: 2418, y: 430 },
+          { x: 2492, y: 452 },
         ],
       },
       {
         type: 'normal',
         points: [
-          { x: 1045, y: 288 },
-          { x: 1170, y: 255 },
-          { x: 1300, y: 266 },
-          { x: 1430, y: 300 },
+          { x: 2528, y: 472 },
+          { x: 2650, y: 518 },
+          { x: 2788, y: 544 },
+          { x: 2940, y: 548 },
+        ],
+      },
+      {
+        type: 'boost',
+        points: [
+          { x: 2940, y: 548 },
+          { x: 3060, y: 532 },
+          { x: 3182, y: 518 },
+          { x: 3305, y: 528 },
+        ],
+      },
+      {
+        type: 'brake',
+        points: [
+          { x: 3305, y: 528 },
+          { x: 3424, y: 538 },
+          { x: 3540, y: 548 },
+          { x: 3650, y: 560 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 3650, y: 560 },
+          { x: 3770, y: 544 },
+          { x: 3890, y: 532 },
+          { x: 4024, y: 536 },
         ],
       },
       {
         type: 'portal',
         points: [
-          { x: 1500, y: 248 },
-          { x: 1500, y: 320 },
+          { x: 4076, y: 488 },
+          { x: 4076, y: 584 },
         ],
       },
       {
         type: 'scenery',
         points: [
-          { x: -360, y: -300 },
-          { x: -270, y: -355 },
-          { x: -165, y: -305 },
-          { x: -55, y: -365 },
-          { x: 50, y: -318 },
+          { x: -604, y: -468 },
+          { x: -492, y: -540 },
+          { x: -362, y: -472 },
+          { x: -224, y: -552 },
+          { x: -76, y: -474 },
+          { x: 74, y: -536 },
+          { x: 236, y: -458 },
+        ],
+      },
+      {
+        type: 'scenery',
+        points: [
+          { x: 642, y: 118 },
+          { x: 782, y: 44 },
+          { x: 926, y: 124 },
+          { x: 1072, y: 52 },
+          { x: 1218, y: 132 },
+        ],
+      },
+      {
+        type: 'scenery',
+        points: [
+          { x: 1860, y: 340 },
+          { x: 1990, y: 272 },
+          { x: 2125, y: 342 },
+          { x: 2254, y: 276 },
+          { x: 2394, y: 350 },
+        ],
+      },
+      {
+        type: 'scenery',
+        points: [
+          { x: 3030, y: 420 },
+          { x: 3152, y: 364 },
+          { x: 3288, y: 422 },
+          { x: 3428, y: 374 },
+          { x: 3580, y: 430 },
         ],
       },
     ],
@@ -926,6 +1011,16 @@ function LineRider() {
     if (resolve) resolve();
   }, []);
 
+  const waitForInterstitialLoaded = useCallback(async (timeoutMs = AD_LOAD_WAIT_MS) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (interstitialLoadedRef.current) return true;
+      if (!interstitialLoadingRef.current) return false;
+      await new Promise((resolve) => setTimeout(resolve, AD_LOAD_POLL_MS));
+    }
+    return interstitialLoadedRef.current;
+  }, []);
+
   const loadPlayInterstitial = useCallback(async () => {
     if (Platform.OS === 'web' || adsUnavailableRef.current) return false;
 
@@ -999,7 +1094,8 @@ function LineRider() {
     }
 
     const canUseAds = await loadPlayInterstitial();
-    if (!canUseAds || !interstitialLoadedRef.current || !interstitialAdRef.current) return;
+    const isLoaded = interstitialLoadedRef.current || await waitForInterstitialLoaded();
+    if (!canUseAds || !isLoaded || !interstitialAdRef.current) return;
 
     await new Promise((resolve) => {
       pendingAdCloseResolverRef.current = resolve;
@@ -1009,7 +1105,7 @@ function LineRider() {
         loadPlayInterstitial();
       });
     });
-  }, [loadPlayInterstitial, persistAdPlayCount, resolvePendingAdClose]);
+  }, [loadPlayInterstitial, persistAdPlayCount, resolvePendingAdClose, waitForInterstitialLoaded]);
 
   useEffect(() => {
     loadPlayInterstitial();

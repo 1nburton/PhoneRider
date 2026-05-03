@@ -24,7 +24,9 @@
 - (NSURL *)bundleURL
 {
 #if DEBUG
-  return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@".expo/.virtual-metro-entry"];
+  RCTBundleURLProvider *provider = [RCTBundleURLProvider sharedSettings];
+  provider.jsLocation = @"localhost:8083";
+  return [provider jsBundleURLForBundleRoot:@".expo/.virtual-metro-entry"];
 #else
   return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
 #endif

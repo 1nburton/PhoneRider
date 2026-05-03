@@ -11,7 +11,7 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.nickburton.phonerider"
+      "bundleIdentifier": "com.nickburton.iosrider"
     },
     "plugins": [
       "expo-asset",
@@ -23,5 +23,8 @@
         }
       ]
     ]
+  },
+  "react-native-google-mobile-ads": {
+    "ios_app_id": "ca-app-pub-5292803742086445~3254060359"
   }
 }

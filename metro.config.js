@@ -23,5 +23,17 @@ config.resolver.sourceExts = Array.from(new Set([
 config.resolver.extraNodeModules = {
   '@react-native-async-storage/async-storage': path.join(projectRoot, 'src/shims/asyncStorage.js'),
 };
+const defaultResolveRequest = config.resolver.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === '@react-native-async-storage/async-storage') {
+    return {
+      type: 'sourceFile',
+      filePath: path.join(projectRoot, 'src/shims/asyncStorage.js'),
+    };
+  }
+  return defaultResolveRequest
+    ? defaultResolveRequest(context, moduleName, platform)
+    : context.resolveRequest(context, moduleName, platform);
+};
 
 module.exports = config;
