@@ -1,3 +1,5 @@
+import 'react-native-gesture-handler';
+
 /**
  * Line Rider — React Native Version
  *
@@ -12,16 +14,15 @@ import {
   View, Text, TouchableOpacity, Dimensions, Alert, ScrollView, Modal, TextInput,
   StyleSheet, StatusBar, Platform,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as RNIap from 'react-native-iap';
 import Svg, {
-  Path, Circle, G, Line, Rect, Polygon,
-  Defs, LinearGradient, Stop,
+  Path, Circle, Ellipse, G, Line, Rect, Polygon,
+  Defs, LinearGradient, RadialGradient, Stop,
 } from 'react-native-svg';
 import {
   GestureDetector, Gesture,
   GestureHandlerRootView,
 } from 'react-native-gesture-handler';
+import { Audio } from 'expo-av';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 const CANVAS_H = SH - 160;
@@ -36,13 +37,108 @@ const TAP_TRACK_THRESHOLD = 28;
 const MINIMAP_W = 128;
 const MINIMAP_H = 92;
 const EDGE_PAN_MARGIN = 84;
-const EDGE_PAN_SPEED = 13;
+const EDGE_PAN_SPEED = 24;
+const CAMERA_PAN_MULT = 1.45;
+const EDIT_NUDGE_STEP = 24;
 const STALL_SPEED_THRESHOLD = 0.16;
 const STALL_MILLISECONDS = 3000;
 const NO_LANDING_WIPEOUT_DELAY_MS = 1400;
+const PORTAL_TRIGGER_RADIUS = 24;
+const PORTAL_COOLDOWN_FRAMES = 45;
+const TRAMPOLINE_BOUNCE = 1.55;
+const TRAMPOLINE_MIN_LAUNCH = 10;
 const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
 const TRACK_SAVE_SLOT_COUNT = 3;
+const AD_PLAY_COUNT_STORAGE_KEY = 'phone-rider-ad-play-count-v1';
+const AD_PLAY_FREQUENCY = 5;
+const ADMOB_TEST_INTERSTITIAL_IDS = {
+  ios: 'ca-app-pub-3940256099942544/4411468910',
+  android: 'ca-app-pub-3940256099942544/1033173712',
+};
+const ADMOB_PRODUCTION_INTERSTITIAL_IDS = {
+  ios: 'ca-app-pub-5292803742086445/3424398394',
+  android: 'ca-app-pub-xxxxxxxxxxxxxxxx/xxxxxxxxxx',
+};
 const CHARACTER_SHOP_ENABLED = false;
+const BOOST_WEEEE_COOLDOWN_MS = 2800;
+const AIR_YIPPEE_DELAY_MS = 450;
+const AIR_YIPPEE_COOLDOWN_MS = 5200;
+
+const memoryStorage = {};
+let trackStorage = null;
+let riderStoreApi = null;
+let googleMobileAdsApi = null;
+
+function getRiderStoreApi() {
+  if (riderStoreApi) return riderStoreApi;
+  try {
+    riderStoreApi = require('react-native-iap');
+    return riderStoreApi;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getGoogleMobileAdsApi() {
+  if (googleMobileAdsApi) return googleMobileAdsApi;
+  try {
+    googleMobileAdsApi = require('react-native-google-mobile-ads');
+    return googleMobileAdsApi;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getInterstitialAdUnitId(adsApi) {
+  if (__DEV__) {
+    return adsApi?.TestIds?.INTERSTITIAL || ADMOB_TEST_INTERSTITIAL_IDS[Platform.OS] || ADMOB_TEST_INTERSTITIAL_IDS.ios;
+  }
+  const productionId = ADMOB_PRODUCTION_INTERSTITIAL_IDS[Platform.OS] || ADMOB_PRODUCTION_INTERSTITIAL_IDS.ios;
+  return productionId.includes('xxxxxxxx') ? null : productionId;
+}
+
+function getTrackStorage() {
+  if (trackStorage) return trackStorage;
+
+  if (Platform.OS === 'web' && globalThis?.localStorage) {
+    trackStorage = {
+      getItem: async (key) => globalThis.localStorage.getItem(key),
+      setItem: async (key, value) => globalThis.localStorage.setItem(key, value),
+    };
+    return trackStorage;
+  }
+
+  try {
+    const FileSystem = require('expo-file-system');
+    if (FileSystem?.documentDirectory && FileSystem?.readAsStringAsync && FileSystem?.writeAsStringAsync) {
+      trackStorage = {
+        getItem: async (key) => {
+          const uri = `${FileSystem.documentDirectory}${encodeURIComponent(key)}.json`;
+          try {
+            return await FileSystem.readAsStringAsync(uri);
+          } catch (_) {
+            return null;
+          }
+        },
+        setItem: async (key, value) => {
+          const uri = `${FileSystem.documentDirectory}${encodeURIComponent(key)}.json`;
+          await FileSystem.writeAsStringAsync(uri, value);
+        },
+      };
+      return trackStorage;
+    }
+  } catch (_) {
+    // Fall back below when FileSystem is unavailable in the current runtime.
+  }
+
+  trackStorage = {
+    getItem: async (key) => memoryStorage[key] || null,
+    setItem: async (key, value) => {
+      memoryStorage[key] = value;
+    },
+  };
+  return trackStorage;
+}
 
 const RIDER_TYPES = [
   {
@@ -169,250 +265,108 @@ const LINE_TYPES = [
   { id: 'boost', label: 'Boost', color: '#31ff79', glow: 'rgba(49,255,121,0.24)', speedMult: 1.14, speedDrag: 0.05,   collidable: true },
   { id: 'brake', label: 'Brake', color: '#ffd64d', glow: 'rgba(255,214,77,0.24)', speedMult: 0.84, speedDrag: -0.02,  collidable: true },
   { id: 'scenery', label: 'Scenery', color: '#b58cff', glow: 'rgba(181,140,255,0.18)', speedMult: 1, speedDrag: 0,      collidable: false },
+  { id: 'portal', label: 'Portal', color: '#ff67d8', glow: 'rgba(255,103,216,0.25)', speedMult: 1, speedDrag: 0, collidable: false, special: 'portal' },
+  { id: 'trampoline', label: 'Trampoline', color: '#ff8e3c', glow: 'rgba(255,142,60,0.24)', speedMult: 1.04, speedDrag: 0.02, collidable: true, special: 'trampoline' },
 ];
+const DRAW_LINE_TYPES = LINE_TYPES.filter((lineTypeEntry) => !lineTypeEntry.special);
 
 const PRESET_LIBRARY = [
   {
-    id: 'slope',
-    label: 'Slope',
+    id: 'portal',
+    label: 'Portal',
+    type: 'portal',
     points: [
-      { x: -160, y: 20 },
-      { x: -80, y: 10 },
-      { x: 0, y: -10 },
-      { x: 80, y: -45 },
-      { x: 160, y: -90 },
-    ],
-  },
-  {
-    id: 'hills',
-    label: 'Hills',
-    points: [
-      { x: -180, y: 25 },
-      { x: -120, y: -25 },
-      { x: -60, y: 20 },
       { x: 0, y: -30 },
-      { x: 70, y: 25 },
-      { x: 130, y: -20 },
-      { x: 190, y: 15 },
+      { x: 0, y: 30 },
     ],
   },
   {
-    id: 'jump',
-    label: 'Jump',
+    id: 'trampoline',
+    label: 'Trampoline',
+    type: 'trampoline',
     points: [
-      { x: -170, y: 30 },
-      { x: -100, y: 18 },
-      { x: -45, y: -12 },
-      { x: -5, y: -55 },
-      { x: 35, y: -8 },
-      { x: 90, y: 18 },
-      { x: 175, y: 35 },
-    ],
-  },
-  {
-    id: 'valley',
-    label: 'Valley',
-    points: [
-      { x: -175, y: -40 },
-      { x: -120, y: -20 },
-      { x: -70, y: 20 },
-      { x: 0, y: 90 },
-      { x: 70, y: 20 },
-      { x: 125, y: -20 },
-      { x: 175, y: -42 },
+      { x: -78, y: 18 },
+      { x: -42, y: 30 },
+      { x: 0, y: 34 },
+      { x: 42, y: 30 },
+      { x: 78, y: 18 },
     ],
   },
 ];
 
 const DEMO_TRACK_LIBRARY = [
   {
-    id: 'glacier_cruise',
-    name: 'Glacier Cruise',
-    difficulty: 'Easy',
-    description: 'Long scenic downhill with gentle rollers and a clean finish.',
+    id: 'drop_off',
+    name: 'Drop off',
+    difficulty: 'Featured',
+    description: 'Steep starter drop with a soft landing and a long runout.',
     recommendedRiderId: 'classic',
     lines: [
       {
         type: 'normal',
         points: [
-          { x: -380, y: -150 },
-          { x: -320, y: -138 },
-          { x: -250, y: -112 },
-          { x: -165, y: -82 },
-          { x: -70, y: -44 },
-          { x: 30, y: -18 },
-          { x: 140, y: 20 },
-          { x: 255, y: 52 },
-          { x: 350, y: 82 },
+          { x: -430, y: -240 },
+          { x: -360, y: -220 },
+          { x: -300, y: -178 },
+          { x: -250, y: -105 },
+          { x: -210, y: 4 },
+          { x: -170, y: 130 },
+          { x: -125, y: 232 },
         ],
       },
       {
         type: 'boost',
         points: [
-          { x: 350, y: 82 },
-          { x: 440, y: 108 },
-          { x: 540, y: 132 },
-          { x: 640, y: 170 },
+          { x: -125, y: 232 },
+          { x: -40, y: 280 },
+          { x: 62, y: 292 },
+          { x: 178, y: 276 },
         ],
       },
       {
         type: 'normal',
         points: [
-          { x: 640, y: 170 },
-          { x: 760, y: 214 },
-          { x: 880, y: 248 },
-          { x: 1010, y: 290 },
-          { x: 1150, y: 330 },
+          { x: 178, y: 276 },
+          { x: 300, y: 250 },
+          { x: 430, y: 246 },
+          { x: 560, y: 276 },
+          { x: 700, y: 304 },
+          { x: 850, y: 306 },
+        ],
+      },
+      {
+        type: 'trampoline',
+        points: [
+          { x: 850, y: 306 },
+          { x: 900, y: 322 },
+          { x: 960, y: 322 },
+          { x: 1015, y: 304 },
+        ],
+      },
+      {
+        type: 'normal',
+        points: [
+          { x: 1045, y: 288 },
+          { x: 1170, y: 255 },
+          { x: 1300, y: 266 },
+          { x: 1430, y: 300 },
+        ],
+      },
+      {
+        type: 'portal',
+        points: [
+          { x: 1500, y: 248 },
+          { x: 1500, y: 320 },
         ],
       },
       {
         type: 'scenery',
         points: [
-          { x: -260, y: -260 },
-          { x: -170, y: -320 },
-          { x: -70, y: -268 },
-          { x: 40, y: -330 },
-          { x: 160, y: -280 },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'canyon_launch',
-    name: 'Canyon Launch',
-    difficulty: 'Medium',
-    description: 'Layered canyon run with linked ramps, speed lanes, and recoveries.',
-    recommendedRiderId: 'snowboarder',
-    lines: [
-      {
-        type: 'normal',
-        points: [
-          { x: -360, y: -140 },
-          { x: -300, y: -122 },
-          { x: -230, y: -96 },
-          { x: -150, y: -60 },
-          { x: -70, y: -20 },
-          { x: 20, y: 30 },
-        ],
-      },
-      {
-        type: 'boost',
-        points: [
-          { x: 20, y: 30 },
-          { x: 110, y: 74 },
-          { x: 205, y: 124 },
-          { x: 290, y: 96 },
-          { x: 360, y: 138 },
-        ],
-      },
-      {
-        type: 'normal',
-        points: [
-          { x: 360, y: 138 },
-          { x: 440, y: 188 },
-          { x: 525, y: 154 },
-          { x: 610, y: 220 },
-          { x: 700, y: 270 },
-          { x: 800, y: 314 },
-        ],
-      },
-      {
-        type: 'brake',
-        points: [
-          { x: 800, y: 314 },
-          { x: 910, y: 346 },
-          { x: 1015, y: 338 },
-          { x: 1110, y: 368 },
-        ],
-      },
-      {
-        type: 'normal',
-        points: [
-          { x: 1110, y: 368 },
-          { x: 1240, y: 410 },
-          { x: 1360, y: 448 },
-        ],
-      },
-      {
-        type: 'scenery',
-        points: [
-          { x: 70, y: -80 },
-          { x: 150, y: -210 },
-          { x: 230, y: -86 },
-          { x: 330, y: -246 },
-          { x: 410, y: -120 },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'switchback_trial',
-    name: 'Switchback Trial',
-    difficulty: 'Hard',
-    description: 'Complex technical descent with switchbacks and timed boost/brake zones.',
-    recommendedRiderId: 'sled',
-    lines: [
-      {
-        type: 'normal',
-        points: [
-          { x: -350, y: -90 },
-          { x: -290, y: -76 },
-          { x: -230, y: -40 },
-          { x: -170, y: -8 },
-          { x: -100, y: 34 },
-          { x: -30, y: 74 },
-          { x: 45, y: 124 },
-          { x: 120, y: 170 },
-        ],
-      },
-      {
-        type: 'brake',
-        points: [
-          { x: 120, y: 170 },
-          { x: 195, y: 142 },
-          { x: 280, y: 210 },
-          { x: 360, y: 184 },
-        ],
-      },
-      {
-        type: 'boost',
-        points: [
-          { x: 360, y: 184 },
-          { x: 450, y: 242 },
-          { x: 540, y: 214 },
-          { x: 635, y: 288 },
-          { x: 730, y: 250 },
-          { x: 820, y: 318 },
-        ],
-      },
-      {
-        type: 'normal',
-        points: [
-          { x: 820, y: 318 },
-          { x: 910, y: 372 },
-          { x: 1000, y: 340 },
-          { x: 1110, y: 412 },
-          { x: 1230, y: 390 },
-          { x: 1360, y: 462 },
-        ],
-      },
-      {
-        type: 'brake',
-        points: [
-          { x: 1360, y: 462 },
-          { x: 1480, y: 500 },
-          { x: 1600, y: 490 },
-        ],
-      },
-      {
-        type: 'scenery',
-        points: [
-          { x: -120, y: -230 },
-          { x: -20, y: -310 },
-          { x: 90, y: -250 },
-          { x: 190, y: -330 },
-          { x: 300, y: -262 },
-          { x: 420, y: -340 },
+          { x: -360, y: -300 },
+          { x: -270, y: -355 },
+          { x: -165, y: -305 },
+          { x: -55, y: -365 },
+          { x: 50, y: -318 },
         ],
       },
     ],
@@ -460,9 +414,12 @@ function riderIdFromProductId(productId) {
 
 function getStartAnchor(lines) {
   if (!lines.length) return null;
-  const firstLine = linePoints(lines[0]);
-  if (!firstLine.length) return null;
-  return firstLine[0];
+  const startLine = lines.find((line) => {
+    const cfg = lineTypeConfig(lineType(line));
+    return cfg.collidable && cfg.special !== 'portal' && linePoints(line).length;
+  });
+  const firstLine = linePoints(startLine || lines[0]);
+  return firstLine.length ? firstLine[0] : null;
 }
 
 function getLinesBounds(lines) {
@@ -480,6 +437,45 @@ function getLinesBounds(lines) {
     });
   });
   return { minX, minY, maxX, maxY };
+}
+
+function getLineBounds(line) {
+  const pts = linePoints(line);
+  if (!pts.length) return null;
+  return {
+    minX: Math.min(...pts.map((p) => p.x)),
+    minY: Math.min(...pts.map((p) => p.y)),
+    maxX: Math.max(...pts.map((p) => p.x)),
+    maxY: Math.max(...pts.map((p) => p.y)),
+  };
+}
+
+function getLineCenter(line) {
+  const bounds = getLineBounds(line);
+  if (!bounds) return null;
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2,
+  };
+}
+
+function transformLinePoints(line, rotationDeg = 0, scale = 1) {
+  const center = getLineCenter(line);
+  if (!center) return line;
+  const theta = (rotationDeg * Math.PI) / 180;
+  const ct = Math.cos(theta);
+  const st = Math.sin(theta);
+  return {
+    ...(Array.isArray(line) ? { type: 'normal' } : line),
+    points: linePoints(line).map((p) => {
+      const dx = (p.x - center.x) * scale;
+      const dy = (p.y - center.y) * scale;
+      return {
+        x: center.x + dx * ct - dy * st,
+        y: center.y + dx * st + dy * ct,
+      };
+    }),
+  };
 }
 
 function getCollidableBounds(lines) {
@@ -660,13 +656,13 @@ function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
 
 function nearestPointOnTrack(lines, wx, wy) {
   let best = null;
-  lines.forEach((line) => {
+  lines.forEach((line, lineIndex) => {
     const pts = linePoints(line);
     for (let i = 0; i < pts.length - 1; i++) {
       const cp = closestPointOnSegment(wx, wy, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
       const dist = Math.hypot(wx - cp.x, wy - cp.y);
       if (!best || dist < best.dist) {
-        best = { point: cp, dist };
+        best = { point: cp, dist, lineIndex };
       }
     }
   });
@@ -700,15 +696,14 @@ function buildPreviewPaths(lines, width, height, padding = 8) {
     .filter((entry) => entry.d);
 }
 
-function demoTrackFromSavedSlot(slot) {
-  if (!slot?.lines?.length) return null;
+function getPresetBounds(preset) {
+  const allPoints = (preset.lines || [preset]).flatMap((line) => line.points || []);
+  if (!allPoints.length) return null;
   return {
-    id: 'drop_off',
-    name: slot.name?.trim() || 'Drop off',
-    difficulty: 'Featured',
-    description: 'Community drop rebuilt from saved track.',
-    recommendedRiderId: 'classic',
-    lines: JSON.parse(JSON.stringify(slot.lines)),
+    minX: Math.min(...allPoints.map((p) => p.x)),
+    maxX: Math.max(...allPoints.map((p) => p.x)),
+    minY: Math.min(...allPoints.map((p) => p.y)),
+    maxY: Math.max(...allPoints.map((p) => p.y)),
   };
 }
 
@@ -724,9 +719,8 @@ function LineRider() {
   const [tool, setTool] = useState('draw');
   const [lineStyle, setLineStyle] = useState('normal');
   const [selectedPresetId, setSelectedPresetId] = useState(PRESET_LIBRARY[0].id);
-  const [presetRotationDeg, setPresetRotationDeg] = useState(0);
-  const [presetScale, setPresetScale] = useState(1);
   const [lines, setLines] = useState([]);
+  const [selectedLineIndex, setSelectedLineIndex] = useState(null);
   const [currentStroke, setCurrentStroke] = useState([]);
   const [playing, setPlaying] = useState(false);
   const [rider, setRider] = useState(null);
@@ -744,6 +738,7 @@ function LineRider() {
   const [showDemoTracks, setShowDemoTracks] = useState(false);
   const [savedTrackSlots, setSavedTrackSlots] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, () => null));
   const [saveSlotNames, setSaveSlotNames] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, (_, index) => `Track ${index + 1}`));
+  const [adGateBusy, setAdGateBusy] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: SW, height: CANVAS_H });
 
   // Camera: panX/panY in screen-space, zoom multiplier
@@ -759,6 +754,28 @@ function LineRider() {
   const noLandingSinceRef = useRef(null);
   const animRef = useRef(null);
   const frameCountRef = useRef(0);
+  const soundRefs = useRef({ air: null, boost: null, crash: null });
+  const soundReadyRef = useRef(false);
+  const soundInitStartedRef = useRef(false);
+  const soundInitPromiseRef = useRef(null);
+  const soundUnavailableRef = useRef(false);
+  const crashSoundPlayedRef = useRef(false);
+  const airStartedAtRef = useRef(null);
+  const airYippeePlayedRef = useRef(false);
+  const lastAirYippeeAtRef = useRef(0);
+  const lastBoostSoundAtRef = useRef(0);
+  const wasTouchingBoostRef = useRef(false);
+  const lastPortalFrameRef = useRef(-Infinity);
+  const prevOnGroundRef = useRef(false);
+  const adPlayCountRef = useRef(0);
+  const adGateBusyRef = useRef(false);
+  const adsInitializedRef = useRef(false);
+  const adsUnavailableRef = useRef(false);
+  const interstitialAdRef = useRef(null);
+  const interstitialLoadedRef = useRef(false);
+  const interstitialLoadingRef = useRef(false);
+  const interstitialUnsubscribersRef = useRef([]);
+  const pendingAdCloseResolverRef = useRef(null);
 
   useEffect(() => { linesRef.current = lines; }, [lines]);
 
@@ -767,7 +784,8 @@ function LineRider() {
 
     const loadSavedTrackSlots = async () => {
       try {
-        const raw = await AsyncStorage.getItem(TRACK_SAVE_STORAGE_KEY);
+        const storage = getTrackStorage();
+        const raw = await storage.getItem(TRACK_SAVE_STORAGE_KEY);
         if (!mounted || !raw) return;
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return;
@@ -782,17 +800,230 @@ function LineRider() {
       }
     };
 
+    const loadAdPlayCount = async () => {
+      try {
+        const storage = getTrackStorage();
+        const raw = await storage.getItem(AD_PLAY_COUNT_STORAGE_KEY);
+        const parsed = Number.parseInt(raw, 10);
+        if (mounted && Number.isFinite(parsed) && parsed >= 0) {
+          adPlayCountRef.current = parsed;
+        }
+      } catch (_) {
+        adPlayCountRef.current = 0;
+      }
+    };
+
     loadSavedTrackSlots();
+    loadAdPlayCount();
     return () => { mounted = false; };
+  }, []);
+
+  const ensureSfxReady = useCallback(async () => {
+    if (soundUnavailableRef.current) return false;
+    if (soundReadyRef.current) return true;
+    if (soundInitStartedRef.current && soundInitPromiseRef.current) {
+      return soundInitPromiseRef.current;
+    }
+
+    soundInitStartedRef.current = true;
+    soundInitPromiseRef.current = (async () => {
+      if (!Audio) throw new Error('Audio module unavailable');
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        staysActiveInBackground: false,
+      });
+
+      const soundEntries = await Promise.allSettled([
+        Audio.Sound.createAsync(require('./assets/sfx/yippee.wav'), { volume: 0.46 }),
+        Audio.Sound.createAsync(require('./assets/sfx/weeeee.wav'), { volume: 0.42 }),
+        Audio.Sound.createAsync(require('./assets/sfx/explosion.wav'), { volume: 0.5 }),
+      ]);
+
+      soundRefs.current = {
+        air: soundEntries[0].status === 'fulfilled' ? soundEntries[0].value.sound : null,
+        boost: soundEntries[1].status === 'fulfilled' ? soundEntries[1].value.sound : null,
+        crash: soundEntries[2].status === 'fulfilled' ? soundEntries[2].value.sound : null,
+      };
+      soundReadyRef.current = Object.values(soundRefs.current).some(Boolean);
+      if (__DEV__) {
+        soundEntries.forEach((entry, index) => {
+          if (entry.status === 'rejected') {
+            const label = ['yippee', 'weeeee', 'explosion'][index] || `sound ${index + 1}`;
+            console.warn(`[PhoneRider] Failed to load ${label} SFX`, entry.reason);
+          }
+        });
+        console.log('[PhoneRider] SFX ready:', soundReadyRef.current);
+      }
+      return soundReadyRef.current;
+    })();
+
+    try {
+      return await soundInitPromiseRef.current;
+    } catch (error) {
+      if (__DEV__) console.warn('[PhoneRider] SFX unavailable', error);
+      soundReadyRef.current = false;
+      soundInitStartedRef.current = false;
+      soundInitPromiseRef.current = null;
+      return false;
+    }
+  }, []);
+
+  const playSfx = useCallback(async (soundId) => {
+    if (!soundReadyRef.current) {
+      const ready = await ensureSfxReady();
+      if (!ready) return;
+    }
+    const sound = soundRefs.current[soundId];
+    if (!sound) return;
+    try {
+      await sound.setPositionAsync(0);
+      await sound.playAsync();
+    } catch (error) {
+      if (__DEV__) console.warn(`[PhoneRider] Failed to play ${soundId} SFX`, error);
+      // Keep gameplay running if a sound fails.
+    }
+  }, [ensureSfxReady]);
+
+  useEffect(() => {
+    ensureSfxReady();
+  }, [ensureSfxReady]);
+
+  useEffect(() => () => {
+    soundReadyRef.current = false;
+    soundInitStartedRef.current = false;
+    soundInitPromiseRef.current = null;
+    soundUnavailableRef.current = false;
+    Object.values(soundRefs.current).forEach((sound) => {
+      sound?.unloadAsync?.().catch(() => {});
+    });
+    soundRefs.current = { air: null, boost: null, crash: null };
   }, []);
 
   const persistTrackSlots = useCallback(async (slots) => {
     try {
-      await AsyncStorage.setItem(TRACK_SAVE_STORAGE_KEY, JSON.stringify(slots));
+      const storage = getTrackStorage();
+      await storage.setItem(TRACK_SAVE_STORAGE_KEY, JSON.stringify(slots));
     } catch (_) {
       Alert.alert('Save failed', 'Unable to update saved track slots right now.');
     }
   }, []);
+
+  const persistAdPlayCount = useCallback(async (count) => {
+    try {
+      const storage = getTrackStorage();
+      await storage.setItem(AD_PLAY_COUNT_STORAGE_KEY, String(count));
+    } catch (_) {
+      // The play counter is only for ad cadence; gameplay should never depend on it.
+    }
+  }, []);
+
+  const resolvePendingAdClose = useCallback(() => {
+    const resolve = pendingAdCloseResolverRef.current;
+    pendingAdCloseResolverRef.current = null;
+    if (resolve) resolve();
+  }, []);
+
+  const loadPlayInterstitial = useCallback(async () => {
+    if (Platform.OS === 'web' || adsUnavailableRef.current) return false;
+
+    try {
+      const adsApi = getGoogleMobileAdsApi();
+      const mobileAds = adsApi?.default;
+      const { AdEventType, InterstitialAd } = adsApi || {};
+      if (!mobileAds || !AdEventType || !InterstitialAd) throw new Error('Google Mobile Ads unavailable');
+
+      if (!adsInitializedRef.current) {
+        await mobileAds().initialize();
+        adsInitializedRef.current = true;
+      }
+
+      if (!interstitialAdRef.current) {
+        const adUnitId = getInterstitialAdUnitId(adsApi);
+        if (!adUnitId) throw new Error('Production AdMob interstitial ad unit ID is not configured');
+
+        const interstitial = InterstitialAd.createForAdRequest(adUnitId, {
+          requestNonPersonalizedAdsOnly: true,
+          keywords: ['game', 'racing', 'skiing'],
+        });
+
+        interstitialUnsubscribersRef.current = [
+          interstitial.addAdEventListener(AdEventType.LOADED, () => {
+            interstitialLoadedRef.current = true;
+            interstitialLoadingRef.current = false;
+          }),
+          interstitial.addAdEventListener(AdEventType.ERROR, () => {
+            interstitialLoadedRef.current = false;
+            interstitialLoadingRef.current = false;
+            resolvePendingAdClose();
+          }),
+          interstitial.addAdEventListener(AdEventType.OPENED, () => {
+            if (Platform.OS === 'ios') StatusBar.setHidden(true);
+          }),
+          interstitial.addAdEventListener(AdEventType.CLOSED, () => {
+            if (Platform.OS === 'ios') StatusBar.setHidden(false);
+            interstitialLoadedRef.current = false;
+            resolvePendingAdClose();
+            interstitial.load();
+          }),
+        ];
+
+        interstitialAdRef.current = interstitial;
+      }
+
+      if (!interstitialLoadedRef.current && !interstitialLoadingRef.current) {
+        interstitialLoadingRef.current = true;
+        interstitialAdRef.current.load();
+      }
+
+      return true;
+    } catch (_) {
+      adsUnavailableRef.current = true;
+      interstitialLoadedRef.current = false;
+      interstitialLoadingRef.current = false;
+      resolvePendingAdClose();
+      return false;
+    }
+  }, [resolvePendingAdClose]);
+
+  const maybeShowPlayInterstitial = useCallback(async () => {
+    const nextPlayCount = adPlayCountRef.current + 1;
+    adPlayCountRef.current = nextPlayCount;
+    persistAdPlayCount(nextPlayCount);
+
+    if (nextPlayCount % AD_PLAY_FREQUENCY !== 0) {
+      loadPlayInterstitial();
+      return;
+    }
+
+    const canUseAds = await loadPlayInterstitial();
+    if (!canUseAds || !interstitialLoadedRef.current || !interstitialAdRef.current) return;
+
+    await new Promise((resolve) => {
+      pendingAdCloseResolverRef.current = resolve;
+      interstitialAdRef.current.show().catch(() => {
+        interstitialLoadedRef.current = false;
+        resolvePendingAdClose();
+        loadPlayInterstitial();
+      });
+    });
+  }, [loadPlayInterstitial, persistAdPlayCount, resolvePendingAdClose]);
+
+  useEffect(() => {
+    loadPlayInterstitial();
+
+    return () => {
+      resolvePendingAdClose();
+      interstitialUnsubscribersRef.current.forEach((unsubscribe) => unsubscribe?.());
+      interstitialUnsubscribersRef.current = [];
+      interstitialAdRef.current = null;
+      interstitialLoadedRef.current = false;
+      interstitialLoadingRef.current = false;
+      if (Platform.OS === 'ios') StatusBar.setHidden(false);
+    };
+  }, [loadPlayInterstitial, resolvePendingAdClose]);
 
   // Screen → world coordinate
   const s2w = useCallback((sx, sy) => ({
@@ -802,6 +1033,7 @@ function LineRider() {
 
   const eraseAt = useCallback((wx, wy) => {
     const thresh = 20 / camRef.current.zoom;
+    setSelectedLineIndex(null);
     setLines((prev) =>
       prev.filter((line) => {
         const pts = linePoints(line);
@@ -837,24 +1069,78 @@ function LineRider() {
     centerCameraAt(centerX, centerY, targetZoom);
   }, [canvasSize.height, canvasSize.width, centerCameraAt]);
 
+  const selectLineAt = useCallback((wx, wy) => {
+    const nearest = nearestPointOnTrack(linesRef.current, wx, wy);
+    if (!nearest || nearest.dist > TAP_TRACK_THRESHOLD / camRef.current.zoom) {
+      setSelectedLineIndex(null);
+      return false;
+    }
+    setSelectedLineIndex(nearest.lineIndex);
+    centerCameraAt(nearest.point.x, nearest.point.y);
+    return true;
+  }, [centerCameraAt]);
+
+  const transformSelectedLine = useCallback((rotationDeg = 0, scale = 1) => {
+    setLines((prev) => {
+      if (selectedLineIndex == null || !prev[selectedLineIndex]) return prev;
+      const next = prev.map((line, idx) => (
+        idx === selectedLineIndex ? transformLinePoints(line, rotationDeg, scale) : line
+      ));
+      linesRef.current = next;
+      return next;
+    });
+  }, [selectedLineIndex]);
+
+  const moveSelectedLine = useCallback((dx, dy) => {
+    setLines((prev) => {
+      if (selectedLineIndex == null || !prev[selectedLineIndex]) return prev;
+      const next = prev.map((line, idx) => (
+        idx === selectedLineIndex
+          ? {
+            ...(Array.isArray(line) ? { type: 'normal' } : line),
+            points: linePoints(line).map((p) => ({ x: p.x + dx, y: p.y + dy })),
+          }
+          : line
+      ));
+      linesRef.current = next;
+      return next;
+    });
+  }, [selectedLineIndex]);
+
+  const deleteSelectedLine = useCallback(() => {
+    setLines((prev) => {
+      if (selectedLineIndex == null || !prev[selectedLineIndex]) return prev;
+      const next = prev.filter((_, idx) => idx !== selectedLineIndex);
+      linesRef.current = next;
+      return next;
+    });
+    setSelectedLineIndex(null);
+  }, [selectedLineIndex]);
+
   const placePresetAt = useCallback((wx, wy) => {
     const preset = PRESET_LIBRARY.find((p) => p.id === selectedPresetId);
     if (!preset) return;
-    const minX = Math.min(...preset.points.map((p) => p.x));
-    const maxX = Math.max(...preset.points.map((p) => p.x));
-    const minY = Math.min(...preset.points.map((p) => p.y));
-    const maxY = Math.max(...preset.points.map((p) => p.y));
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const theta = (presetRotationDeg * Math.PI) / 180;
-    const ct = Math.cos(theta);
-    const st = Math.sin(theta);
-    const placed = preset.points.map((p) => ({
-      x: wx + ((p.x - cx) * presetScale * ct - (p.y - cy) * presetScale * st),
-      y: wy + ((p.x - cx) * presetScale * st + (p.y - cy) * presetScale * ct),
+    const bounds = getPresetBounds(preset);
+    if (!bounds) return;
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    const sourceLines = preset.lines || [{ points: preset.points, type: preset.type || lineStyle }];
+    const placedLines = sourceLines.map((sourceLine) => ({
+      type: sourceLine.type || preset.type || lineStyle,
+      points: sourceLine.points.map((p) => ({
+        x: wx + (p.x - cx),
+        y: wy + (p.y - cy),
+      })),
     }));
-    setLines((prev) => [...prev, { points: placed, type: lineStyle }]);
-  }, [lineStyle, presetRotationDeg, presetScale, selectedPresetId]);
+    const insertedIndex = linesRef.current.length;
+    setLines((prev) => {
+      const next = [...prev, ...placedLines];
+      linesRef.current = next;
+      return next;
+    });
+    setSelectedLineIndex(insertedIndex);
+    setTool('edit');
+  }, [lineStyle, selectedPresetId]);
 
   const saveTrackToSlot = useCallback((slotIndex) => {
     if (!linesRef.current.length) {
@@ -916,6 +1202,7 @@ function LineRider() {
     const nextLines = JSON.parse(JSON.stringify(slot.lines));
     linesRef.current = nextLines;
     setLines(nextLines);
+    setSelectedLineIndex(null);
     setCurrentStroke([]);
     setShowSaveSlots(false);
     requestAnimationFrame(() => {
@@ -930,6 +1217,7 @@ function LineRider() {
     const nextLines = JSON.parse(JSON.stringify(demoTrack.lines));
     linesRef.current = nextLines;
     setLines(nextLines);
+    setSelectedLineIndex(null);
     setCurrentStroke([]);
     setTool('draw');
     setShowDemoTracks(false);
@@ -945,6 +1233,7 @@ function LineRider() {
     let mounted = true;
     let purchaseSub;
     let errorSub;
+    let RNIap;
 
     const unlockFromPurchases = (purchases) => {
       if (!mounted || !Array.isArray(purchases)) return;
@@ -958,6 +1247,9 @@ function LineRider() {
     const initIap = async () => {
       const paidSkus = RIDER_TYPES.map((r) => r.productId).filter(Boolean);
       try {
+        RNIap = getRiderStoreApi();
+        if (!RNIap) throw new Error('In-app purchase module is unavailable.');
+
         await RNIap.initConnection();
         if (!mounted) return;
         setStoreReady(true);
@@ -982,6 +1274,7 @@ function LineRider() {
         unlockFromPurchases(existing);
       } catch (err) {
         if (mounted) setStoreReady(false);
+        return;
       }
 
       purchaseSub = RNIap.purchaseUpdatedListener(async (purchase) => {
@@ -1018,12 +1311,15 @@ function LineRider() {
       mounted = false;
       purchaseSub?.remove?.();
       errorSub?.remove?.();
-      RNIap.endConnection().catch(() => {});
+      RNIap?.endConnection?.().catch(() => {});
     };
   }, []);
 
   const restoreRiderPurchases = useCallback(async () => {
     try {
+      const RNIap = getRiderStoreApi();
+      if (!RNIap) throw new Error('In-app purchase module is unavailable.');
+
       const purchases = await RNIap.getAvailablePurchases({
         alsoPublishToEventListenerIOS: false,
         onlyIncludeActiveItemsIOS: true,
@@ -1057,6 +1353,9 @@ function LineRider() {
     }
     setPurchaseBusyId(riderId);
     try {
+      const RNIap = getRiderStoreApi();
+      if (!RNIap) throw new Error('In-app purchase module is unavailable.');
+
       await RNIap.requestPurchase({
         request: {
           ios: { sku: cfg.productId },
@@ -1094,10 +1393,12 @@ function LineRider() {
         eraseAt(w.x, w.y);
       } else if (tool === 'preset') {
         placePresetAt(w.x, w.y);
+      } else if (tool === 'edit') {
+        selectLineAt(w.x, w.y);
       }
     })
     .onUpdate((e) => {
-      if (tool === 'preset') return;
+      if (tool === 'preset' || tool === 'edit') return;
 
       // Autopan while drawing near screen edges.
       const c = camRef.current;
@@ -1132,7 +1433,7 @@ function LineRider() {
       });
     })
     .onEnd(() => {
-      if (tool === 'preset') return;
+      if (tool === 'preset' || tool === 'edit') return;
       setCurrentStroke((stroke) => {
         if (stroke.length > 1) {
           const simplified = [stroke[0]];
@@ -1153,6 +1454,10 @@ function LineRider() {
     .onEnd((e, success) => {
       if (!success || tool === 'preset' || !linesRef.current.length) return;
       const w = s2w(e.x, e.y);
+      if (tool === 'edit') {
+        selectLineAt(w.x, w.y);
+        return;
+      }
       const nearest = nearestPointOnTrack(linesRef.current, w.x, w.y);
       if (!nearest) return;
       if (nearest.dist <= TAP_TRACK_THRESHOLD / camRef.current.zoom) {
@@ -1168,8 +1473,8 @@ function LineRider() {
     })
     .onUpdate((e) => {
       const c = camRef.current;
-      c.x = camStartRef.current.x + e.translationX;
-      c.y = camStartRef.current.y + e.translationY;
+      c.x = camStartRef.current.x + e.translationX * CAMERA_PAN_MULT;
+      c.y = camStartRef.current.y + e.translationY * CAMERA_PAN_MULT;
       setCam({ ...c });
     });
 
@@ -1196,8 +1501,19 @@ function LineRider() {
   const composedGesture = Gesture.Race(twoFingerGesture, Gesture.Simultaneous(drawGesture, tapGesture));
 
   /* ══════════ PLAY / STOP ══════════ */
-  const startPlay = useCallback(() => {
-    if (lines.length === 0) return;
+  const startPlay = useCallback(async () => {
+    if (lines.length === 0 || adGateBusyRef.current) return;
+
+    adGateBusyRef.current = true;
+    setAdGateBusy(true);
+
+    try {
+      await maybeShowPlayInterstitial();
+    } finally {
+      adGateBusyRef.current = false;
+      setAdGateBusy(false);
+    }
+
     const start = getStartAnchor(lines);
     if (!start) return;
     const cfg = riderConfig(activeRiderId);
@@ -1214,10 +1530,18 @@ function LineRider() {
     trailRef.current = [];
     stallSinceRef.current = null;
     noLandingSinceRef.current = null;
+    crashSoundPlayedRef.current = false;
+    airStartedAtRef.current = null;
+    airYippeePlayedRef.current = false;
+    lastAirYippeeAtRef.current = 0;
+    lastBoostSoundAtRef.current = 0;
+    wasTouchingBoostRef.current = false;
+    lastPortalFrameRef.current = -Infinity;
+    prevOnGroundRef.current = false;
     setCrashReason('wipeout');
     setCrashed(false);
     setPlaying(true);
-  }, [activeRiderId, lines]);
+  }, [activeRiderId, lines, maybeShowPlayInterstitial]);
 
   const stopPlay = useCallback(() => {
     setPlaying(false);
@@ -1226,6 +1550,12 @@ function LineRider() {
     trailRef.current = [];
     stallSinceRef.current = null;
     noLandingSinceRef.current = null;
+    crashSoundPlayedRef.current = false;
+    airStartedAtRef.current = null;
+    airYippeePlayedRef.current = false;
+    wasTouchingBoostRef.current = false;
+    lastPortalFrameRef.current = -Infinity;
+    prevOnGroundRef.current = false;
     setRider(null);
     setTrail([]);
     setCrashReason('wipeout');
@@ -1240,6 +1570,7 @@ function LineRider() {
       if (!r) return;
       if (!r.crashed) {
         let grounded = false;
+        let touchedBoost = false;
         const speed = Math.hypot(r.vx, r.vy);
         const steps = Math.min(12, Math.max(1, Math.ceil(speed / 2.5)));
         const stepGravity = GRAVITY / steps;
@@ -1252,6 +1583,35 @@ function LineRider() {
           for (const line of linesRef.current) {
             const pts = linePoints(line);
             const cfg = lineTypeConfig(lineType(line));
+            if (cfg.special === 'portal') {
+              if (frameCountRef.current - lastPortalFrameRef.current < PORTAL_COOLDOWN_FRAMES) continue;
+              for (let i = 0; i < pts.length - 1; i++) {
+                const portalDist = distToSeg(r.x, r.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+                if (portalDist <= PORTAL_TRIGGER_RADIUS) {
+                  const start = getStartAnchor(linesRef.current);
+                  if (start) {
+                    const launchCfg = riderConfig(r.riderTypeId || activeRiderId);
+                    r.x = start.x;
+                    r.y = start.y - RIDER_RADIUS - 2;
+                    r.vx = launchCfg.launchSpeed;
+                    r.vy = 0;
+                    r.angle = 0;
+                    r.onGround = false;
+                    r.crashed = false;
+                    grounded = false;
+                    lastPortalFrameRef.current = frameCountRef.current;
+                    noLandingSinceRef.current = null;
+                    stallSinceRef.current = null;
+                    airStartedAtRef.current = null;
+                    airYippeePlayedRef.current = false;
+                    prevOnGroundRef.current = false;
+                    trailRef.current = [{ x: r.x, y: r.y }];
+                  }
+                  break;
+                }
+              }
+              continue;
+            }
             if (!cfg.collidable) continue;
             for (let i = 0; i < pts.length - 1; i++) {
               const cp = closestPointOnSegment(r.x, r.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
@@ -1272,6 +1632,14 @@ function LineRider() {
                   r.vx = tx * tDot * FRICTION;
                   r.vy = ty * tDot * FRICTION;
                 }
+                if (cfg.special === 'trampoline') {
+                  const launchSpeed = Math.max(TRAMPOLINE_MIN_LAUNCH, Math.hypot(r.vx, r.vy) * TRAMPOLINE_BOUNCE);
+                  const outwardY = ny < 0 ? ny : -Math.abs(ny || 1);
+                  const outwardX = Math.abs(nx) > 0.15 ? nx : -0.12;
+                  const normalLen = Math.hypot(outwardX, outwardY) || 1;
+                  r.vx = (outwardX / normalLen) * launchSpeed * 0.42 + r.vx * 0.28;
+                  r.vy = (outwardY / normalLen) * launchSpeed;
+                }
                 if (cfg.speedDrag !== 0) {
                   // Gradual speed change: nudge current speed toward target each contact step
                   const curSpeed = Math.hypot(r.vx, r.vy);
@@ -1288,6 +1656,7 @@ function LineRider() {
                     r.vy *= scale;
                   }
                 }
+                if (cfg.id === 'boost') touchedBoost = true;
                 r.angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
                 grounded = true;
               }
@@ -1302,6 +1671,40 @@ function LineRider() {
           r.vx = (r.vx / postSpeed) * activeCfg.topSpeed;
           r.vy = (r.vy / postSpeed) * activeCfg.topSpeed;
         }
+
+        const now = Date.now();
+        if (
+          grounded
+          && touchedBoost
+          && !wasTouchingBoostRef.current
+          && now - lastBoostSoundAtRef.current >= BOOST_WEEEE_COOLDOWN_MS
+        ) {
+          lastBoostSoundAtRef.current = now;
+          playSfx('boost');
+        }
+        wasTouchingBoostRef.current = grounded && touchedBoost;
+
+        const movingSpeed = Math.hypot(r.vx, r.vy);
+        const wasGrounded = prevOnGroundRef.current;
+        if (!grounded && movingSpeed > 2.3) {
+          if (wasGrounded || !airStartedAtRef.current) {
+            airStartedAtRef.current = now;
+            airYippeePlayedRef.current = false;
+          }
+          if (
+            !airYippeePlayedRef.current
+            && now - airStartedAtRef.current >= AIR_YIPPEE_DELAY_MS
+            && now - lastAirYippeeAtRef.current >= AIR_YIPPEE_COOLDOWN_MS
+          ) {
+            airYippeePlayedRef.current = true;
+            lastAirYippeeAtRef.current = now;
+            playSfx('air');
+          }
+        } else if (grounded) {
+          airStartedAtRef.current = null;
+          airYippeePlayedRef.current = false;
+        }
+        prevOnGroundRef.current = grounded;
 
         const collidableBounds = getCollidableBounds(linesRef.current);
         const hasTrackBelow = hasReachableTrackBelow(linesRef.current, r);
@@ -1318,18 +1721,25 @@ function LineRider() {
             r.crashed = true;
             setCrashReason('wipeout');
             setCrashed(true);
+            if (!crashSoundPlayedRef.current) {
+              crashSoundPlayedRef.current = true;
+              playSfx('crash');
+            }
           }
         } else {
           noLandingSinceRef.current = null;
         }
 
-        const movingSpeed = Math.hypot(r.vx, r.vy);
         if (!r.crashed && grounded && movingSpeed < STALL_SPEED_THRESHOLD) {
           if (!stallSinceRef.current) stallSinceRef.current = Date.now();
           if (Date.now() - stallSinceRef.current >= STALL_MILLISECONDS) {
             r.crashed = true;
             setCrashReason('stalled');
             setCrashed(true);
+            if (!crashSoundPlayedRef.current) {
+              crashSoundPlayedRef.current = true;
+              playSfx('crash');
+            }
           }
         } else {
           stallSinceRef.current = null;
@@ -1357,7 +1767,7 @@ function LineRider() {
     frameCountRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [activeRiderId, canvasSize.height, canvasSize.width, playing]);
+  }, [activeRiderId, canvasSize.height, canvasSize.width, playSfx, playing]);
 
   const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };
@@ -1401,9 +1811,7 @@ function LineRider() {
   const zoomPct = Math.round(cam.zoom * 100);
   const activeRiderCfg = riderConfig(activeRiderId);
   const currentRiderCfg = rider ? riderConfig(rider.riderTypeId || activeRiderId) : activeRiderCfg;
-  const dropOffSlot = savedTrackSlots.find((slot) => slot?.name?.trim?.().toLowerCase() === 'drop off');
-  const dropOffDemoTrack = demoTrackFromSavedSlot(dropOffSlot);
-  const demoTracks = dropOffDemoTrack ? [dropOffDemoTrack] : DEMO_TRACK_LIBRARY;
+  const demoTracks = DEMO_TRACK_LIBRARY;
   const rAngle = rider
     ? (rider.onGround ? rider.angle : Math.atan2(rider.vy || 0, rider.vx || 0)) * (180 / Math.PI)
     : 0;
@@ -1448,16 +1856,16 @@ function LineRider() {
 
         <View style={[s.toolGroup, s.toolGroupRight]}>
           {!playing ? (
-            <TouchableOpacity onPress={startPlay} disabled={!lines.length}
-              style={[s.playBtn, !lines.length && s.playBtnOff]}>
-              <Text style={[s.playText, !lines.length && { color: 'rgba(255,255,255,0.3)' }]}>▶ PLAY</Text>
+            <TouchableOpacity onPress={startPlay} disabled={!lines.length || adGateBusy}
+              style={[s.playBtn, (!lines.length || adGateBusy) && s.playBtnOff]}>
+              <Text style={[s.playText, (!lines.length || adGateBusy) && { color: 'rgba(255,255,255,0.3)' }]}>▶ PLAY</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity onPress={stopPlay} style={s.stopBtn}>
               <Text style={s.stopText}>■ STOP</Text>
             </TouchableOpacity>
           )}
-          <TouchableOpacity onPress={() => { setLines([]); stopPlay(); resetView(); }} style={s.clearBtn}>
+          <TouchableOpacity onPress={() => { setLines([]); setSelectedLineIndex(null); stopPlay(); resetView(); }} style={s.clearBtn}>
             <Text style={{ fontSize: 14 }}>🗑</Text>
           </TouchableOpacity>
         </View>
@@ -1474,29 +1882,86 @@ function LineRider() {
               <Text style={[s.presetLabel, preset.id === selectedPresetId && s.presetLabelActive]}>{preset.label}</Text>
             </TouchableOpacity>
           ))}
-          <View style={s.presetAdjustGroup}>
-            <TouchableOpacity style={s.presetAdjustBtn} onPress={() => setPresetRotationDeg((v) => v - 15)}>
-              <Text style={s.presetAdjustText}>⟲</Text>
-            </TouchableOpacity>
-            <Text style={s.presetValue}>{presetRotationDeg}°</Text>
-            <TouchableOpacity style={s.presetAdjustBtn} onPress={() => setPresetRotationDeg((v) => v + 15)}>
-              <Text style={s.presetAdjustText}>⟳</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.presetAdjustBtn} onPress={() => setPresetScale((v) => Math.max(0.4, +(v - 0.1).toFixed(2)))}>
-              <Text style={s.presetAdjustText}>−</Text>
-            </TouchableOpacity>
-            <Text style={s.presetValue}>{presetScale.toFixed(1)}x</Text>
-            <TouchableOpacity style={s.presetAdjustBtn} onPress={() => setPresetScale((v) => Math.min(2.8, +(v + 0.1).toFixed(2)))}>
-              <Text style={s.presetAdjustText}>+</Text>
-            </TouchableOpacity>
-          </View>
           <Text style={s.presetHint}>Tap canvas to place</Text>
         </View>
       )}
 
-      {!playing && (tool === 'draw' || tool === 'preset') && (
+      {!playing && tool === 'edit' && (
+        <View style={s.editBar}>
+          <Text style={s.editStatus}>
+            {selectedLineIndex == null ? 'Tap a line or preset' : `Selected ${selectedLineIndex + 1}`}
+          </Text>
+          <TouchableOpacity
+            style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+            onPress={() => transformSelectedLine(-15, 1)}
+            disabled={selectedLineIndex == null}
+          >
+            <Text style={s.presetAdjustText}>⟲</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+            onPress={() => transformSelectedLine(15, 1)}
+            disabled={selectedLineIndex == null}
+          >
+            <Text style={s.presetAdjustText}>⟳</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+            onPress={() => transformSelectedLine(0, 0.88)}
+            disabled={selectedLineIndex == null}
+          >
+            <Text style={s.presetAdjustText}>−</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+            onPress={() => transformSelectedLine(0, 1.14)}
+            disabled={selectedLineIndex == null}
+          >
+            <Text style={s.presetAdjustText}>+</Text>
+          </TouchableOpacity>
+          <View style={s.editMoveGroup}>
+            <TouchableOpacity
+              style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+              onPress={() => moveSelectedLine(0, -EDIT_NUDGE_STEP)}
+              disabled={selectedLineIndex == null}
+            >
+              <Text style={s.presetAdjustText}>↑</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+              onPress={() => moveSelectedLine(-EDIT_NUDGE_STEP, 0)}
+              disabled={selectedLineIndex == null}
+            >
+              <Text style={s.presetAdjustText}>←</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+              onPress={() => moveSelectedLine(EDIT_NUDGE_STEP, 0)}
+              disabled={selectedLineIndex == null}
+            >
+              <Text style={s.presetAdjustText}>→</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+              onPress={() => moveSelectedLine(0, EDIT_NUDGE_STEP)}
+              disabled={selectedLineIndex == null}
+            >
+              <Text style={s.presetAdjustText}>↓</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={[s.presetAdjustBtn, selectedLineIndex == null && s.editBtnDisabled]}
+            onPress={deleteSelectedLine}
+            disabled={selectedLineIndex == null}
+          >
+            <Text style={s.presetAdjustText}>⌫</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {!playing && tool === 'draw' && (
         <View style={s.lineTypeBar}>
-          {LINE_TYPES.map((lt) => (
+          {DRAW_LINE_TYPES.map((lt) => (
             <TouchableOpacity
               key={lt.id}
               onPress={() => setLineStyle(lt.id)}
@@ -1526,6 +1991,12 @@ function LineRider() {
                 <Stop offset="0" stopColor="#0a0a1a" />
                 <Stop offset="1" stopColor="#1a1a2e" />
               </LinearGradient>
+              <RadialGradient id="portalHaze" cx="50%" cy="50%" r="50%">
+                <Stop offset="0" stopColor="#12001d" stopOpacity="0.92" />
+                <Stop offset="0.36" stopColor="#7d2cff" stopOpacity="0.48" />
+                <Stop offset="0.68" stopColor="#ff58d2" stopOpacity="0.2" />
+                <Stop offset="1" stopColor="#2b074d" stopOpacity="0" />
+              </RadialGradient>
             </Defs>
             <Rect x="0" y="0" width={canvasSize.width} height={canvasSize.height} fill="url(#bg)" />
 
@@ -1534,8 +2005,75 @@ function LineRider() {
               {lines.map((line, idx) => {
                 const cfg = lineTypeConfig(lineType(line));
                 const pts = linePoints(line);
+                const isSelected = !playing && tool === 'edit' && idx === selectedLineIndex;
+                if (cfg.special === 'portal') {
+                  const mid = pts.length >= 2
+                    ? { x: (pts[0].x + pts[pts.length - 1].x) / 2, y: (pts[0].y + pts[pts.length - 1].y) / 2 }
+                    : pts[0];
+                  if (!mid) return null;
+                  const portalAngle = pts.length >= 2
+                    ? Math.atan2(pts[pts.length - 1].y - pts[0].y, pts[pts.length - 1].x - pts[0].x) * (180 / Math.PI) - 90
+                    : 0;
+                  const swirlA = `M${mid.x - 8},${mid.y - 32} C${mid.x + 21},${mid.y - 24} ${mid.x + 18},${mid.y + 22} ${mid.x - 7},${mid.y + 31}`;
+                  const swirlB = `M${mid.x + 7},${mid.y - 34} C${mid.x - 19},${mid.y - 20} ${mid.x - 20},${mid.y + 20} ${mid.x + 8},${mid.y + 33}`;
+                  const flamePathA = `M${mid.x - 17},${mid.y + 27} C${mid.x - 31},${mid.y + 8} ${mid.x - 25},${mid.y - 26} ${mid.x - 8},${mid.y - 42}`;
+                  const flamePathB = `M${mid.x + 17},${mid.y - 27} C${mid.x + 31},${mid.y - 8} ${mid.x + 25},${mid.y + 26} ${mid.x + 8},${mid.y + 42}`;
+                  return (
+                    <G key={idx}>
+                      <G rotation={portalAngle} originX={mid.x} originY={mid.y}>
+                        <Ellipse cx={mid.x} cy={mid.y} rx={30} ry={54} fill="url(#portalHaze)" />
+                        {isSelected && (
+                          <Ellipse cx={mid.x} cy={mid.y} rx={34} ry={59} fill="none"
+                            stroke="#ffffff" strokeWidth={1.4} strokeDasharray="4 4" opacity={0.72} />
+                        )}
+                        <Ellipse cx={mid.x} cy={mid.y} rx={21} ry={45} fill="#080013" opacity={0.78} />
+                        <Ellipse cx={mid.x} cy={mid.y} rx={21} ry={45} fill="none" stroke="#3f14ff"
+                          strokeWidth={11} opacity={0.42} />
+                        <Ellipse cx={mid.x} cy={mid.y} rx={14} ry={38} fill="none" stroke="#ff67d8"
+                          strokeWidth={6.4} opacity={0.96} />
+                        <Ellipse cx={mid.x} cy={mid.y} rx={8} ry={27} fill="none" stroke="#b777ff"
+                          strokeWidth={2.2} opacity={0.72} />
+                        <Path d={swirlA} stroke="#7f43ff" strokeWidth={2.4}
+                          strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.78} />
+                        <Path d={swirlB} stroke="#ff9bde" strokeWidth={1.9}
+                          strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.7} />
+                        <Path d={flamePathA} stroke="#b53cff" strokeWidth={4.8}
+                          strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.84} />
+                        <Path d={flamePathB} stroke="#ff9b3d" strokeWidth={2.7}
+                          strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
+                        <Ellipse cx={mid.x} cy={mid.y} rx={4.5} ry={17} fill="rgba(136,42,255,0.32)"
+                          stroke="#ffd0f4" strokeWidth={1.4} opacity={0.88} />
+                        <Circle cx={mid.x - 13} cy={mid.y - 34} r={2.3} fill="#ffd0f4" opacity={0.8} />
+                        <Circle cx={mid.x + 14} cy={mid.y + 35} r={1.9} fill="#ff9b3d" opacity={0.72} />
+                      </G>
+                      <Circle cx={mid.x} cy={mid.y} r={4.5} fill="#fff1ff" opacity={0.72} />
+                    </G>
+                  );
+                }
+                if (cfg.special === 'trampoline') {
+                  return (
+                    <React.Fragment key={idx}>
+                      {isSelected && (
+                        <Path d={pointsToPath(pts)} stroke="#ffffff"
+                          strokeWidth={TRACK_WIDTH + 14} strokeLinecap="round" strokeLinejoin="round" fill="none"
+                          strokeDasharray="5 5" opacity={0.42} />
+                      )}
+                      <Path d={pointsToPath(pts)} stroke={cfg.glow}
+                        strokeWidth={TRACK_WIDTH + 9} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      <Path d={pointsToPath(pts)} stroke="#ffd08f"
+                        strokeWidth={TRACK_WIDTH + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      <Path d={pointsToPath(pts)} stroke={cfg.color}
+                        strokeWidth={TRACK_WIDTH} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                    </React.Fragment>
+                  );
+                }
                 return (
                 <React.Fragment key={idx}>
+                  {isSelected && (
+                    <Path d={pointsToPath(pts)} stroke="#ffffff"
+                      strokeWidth={TRACK_WIDTH + 10} strokeLinecap="round" strokeLinejoin="round" fill="none"
+                      strokeDasharray="5 5" opacity={0.38} />
+                  )}
                   <Path d={pointsToPath(pts)} stroke={cfg.glow}
                     strokeWidth={TRACK_WIDTH + 6} strokeLinecap="round" strokeLinejoin="round" fill="none" />
                   <Path d={pointsToPath(pts)} stroke={cfg.color}
@@ -1594,6 +2132,12 @@ function LineRider() {
                 </TouchableOpacity>
                 <TouchableOpacity style={s.zoomBtnWide} onPress={() => setShowSaveSlots(true)}>
                   <Text style={s.zoomBtnTextSmall}>SAVES</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.zoomBtnWide, tool === 'edit' && s.quickEditBtnActive]}
+                  onPress={() => setTool('edit')}
+                >
+                  <Text style={[s.zoomBtnTextSmall, tool === 'edit' && s.quickEditTextActive]}>EDIT</Text>
                 </TouchableOpacity>
               </View>
             ) : <View />}
@@ -1938,6 +2482,11 @@ const s = StyleSheet.create({
   presetAdjustText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700' },
   presetValue: { color: 'rgba(255,255,255,0.65)', fontSize: 10, minWidth: 28, textAlign: 'center' },
   presetHint: { marginLeft: 'auto', color: 'rgba(255,255,255,0.3)', fontSize: 11 },
+  editBar: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10, paddingVertical: 6,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
+  editStatus: { flex: 1, color: 'rgba(223,247,255,0.58)', fontSize: 11, fontWeight: '700' },
+  editMoveGroup: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  editBtnDisabled: { opacity: 0.35 },
   shopBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(4,6,14,0.75)', justifyContent: 'flex-end' },
   shopSheet: { backgroundColor: '#101626', borderTopLeftRadius: 18, borderTopRightRadius: 18,
     borderWidth: 1, borderColor: 'rgba(124,226,255,0.2)', paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12,
@@ -2014,7 +2563,9 @@ const s = StyleSheet.create({
   zoomBtnWide: { minWidth: 58, height: 28, borderRadius: 6, borderWidth: 1,
     borderColor: 'rgba(124,226,255,0.32)', backgroundColor: 'rgba(124,226,255,0.08)',
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  quickEditBtnActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.14)' },
   zoomBtnTextSmall: { color: '#dff7ff', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
+  quickEditTextActive: { color: '#00ffc8' },
   zoomBtnTextDisabled: { color: 'rgba(255,255,255,0.25)' },
   zoomPct: { color: 'rgba(255,255,255,0.5)', fontSize: 11, minWidth: 34, textAlign: 'center',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },

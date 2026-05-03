@@ -14,7 +14,14 @@
       "bundleIdentifier": "com.nickburton.phonerider"
     },
     "plugins": [
-      "expo-asset"
+      "expo-asset",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-5292803742086445~3254060359"
+        }
+      ]
     ]
   }
 }
