@@ -58,7 +58,7 @@ const ADMOB_TEST_INTERSTITIAL_IDS = {
   android: 'ca-app-pub-3940256099942544/1033173712',
 };
 const ADMOB_PRODUCTION_INTERSTITIAL_IDS = {
-  ios: 'ca-app-pub-5292803742086445/3424398394',
+  ios: 'ca-app-pub-5292803742086445/5781242654',
   android: 'ca-app-pub-xxxxxxxxxxxxxxxx/xxxxxxxxxx',
 };
 const CHARACTER_SHOP_ENABLED = false;
@@ -1477,7 +1477,7 @@ function LineRider() {
 
   /* ══════════ GESTURES ══════════ */
 
-  // 1-finger draw / erase
+  // 1-finger draw / erase / move
   const drawGesture = Gesture.Pan()
     .maxPointers(1)
     .enabled(!playing)
@@ -1485,6 +1485,9 @@ function LineRider() {
       const w = s2w(e.x, e.y);
       if (tool === 'draw') {
         setCurrentStroke([w]);
+      } else if (tool === 'move') {
+        setCurrentStroke([]);
+        camStartRef.current = { ...camRef.current };
       } else if (tool === 'erase') {
         eraseAt(w.x, w.y);
       } else if (tool === 'preset') {
@@ -1494,6 +1497,13 @@ function LineRider() {
       }
     })
     .onUpdate((e) => {
+      if (tool === 'move') {
+        const c = camRef.current;
+        c.x = camStartRef.current.x + e.translationX * CAMERA_PAN_MULT;
+        c.y = camStartRef.current.y + e.translationY * CAMERA_PAN_MULT;
+        setCam({ ...c });
+        return;
+      }
       if (tool === 'preset' || tool === 'edit') return;
 
       // Autopan while drawing near screen edges.
@@ -1529,7 +1539,7 @@ function LineRider() {
       });
     })
     .onEnd(() => {
-      if (tool === 'preset' || tool === 'edit') return;
+      if (tool === 'preset' || tool === 'edit' || tool === 'move') return;
       setCurrentStroke((stroke) => {
         if (stroke.length > 1) {
           const simplified = [stroke[0]];
@@ -1548,7 +1558,7 @@ function LineRider() {
     .enabled(!playing)
     .maxDistance(12)
     .onEnd((e, success) => {
-      if (!success || tool === 'preset' || !linesRef.current.length) return;
+      if (!success || tool === 'preset' || tool === 'move' || !linesRef.current.length) return;
       const w = s2w(e.x, e.y);
       if (tool === 'edit') {
         selectLineAt(w.x, w.y);
@@ -1929,7 +1939,7 @@ function LineRider() {
       {/* Header */}
       <View style={s.header}>
         <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-          <Text style={s.title}>⛷ iOS RIDER</Text>
+          <Text style={s.title}>⛷ SKETCH RIDER</Text>
           <Text style={s.subtitle}>NEON</Text>
         </View>
       </View>
@@ -2270,6 +2280,18 @@ function LineRider() {
             </View>
           </View>
 
+          {!playing && (
+            <TouchableOpacity
+              style={[s.moveFab, tool === 'move' && s.moveFabActive]}
+              onPress={() => {
+                setCurrentStroke([]);
+                setTool((prev) => (prev === 'move' ? 'draw' : 'move'));
+              }}
+            >
+              <Text style={[s.moveFabIcon, tool === 'move' && s.moveFabIconActive]}>↔</Text>
+            </TouchableOpacity>
+          )}
+
           {minimap && (
             <GestureDetector gesture={minimapTapGesture}>
               <View style={s.minimapWrap}>
@@ -2310,7 +2332,7 @@ function LineRider() {
             <View style={s.emptyState} pointerEvents="none">
               <Text style={{ fontSize: 40, marginBottom: 8 }}>⛷</Text>
               <Text style={s.emptyText}>Draw a track with your finger</Text>
-              <Text style={s.emptySubtext}>Two fingers to pan &amp; pinch-zoom</Text>
+              <Text style={s.emptySubtext}>Tap ↔ to move with one finger</Text>
               <Text style={s.emptySubtext}>Then press PLAY!</Text>
             </View>
           )}
@@ -2670,6 +2692,12 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', overflow: 'hidden',
     backgroundColor: 'rgba(10,10,26,0.92)' },
   minimapHint: { position: 'absolute', right: 6, bottom: 4, color: 'rgba(255,255,255,0.45)', fontSize: 10 },
+  moveFab: { position: 'absolute', bottom: Platform.OS === 'ios' ? 34 : 18, left: 16, zIndex: 11,
+    width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(10,10,26,0.92)', borderWidth: 1.5, borderColor: 'rgba(124,226,255,0.35)' },
+  moveFabActive: { backgroundColor: 'rgba(0,255,200,0.18)', borderColor: '#00ffc8' },
+  moveFabIcon: { color: '#dff7ff', fontSize: 24, fontWeight: '900' },
+  moveFabIconActive: { color: '#00ffc8' },
   // Overlays
   emptyState: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
   emptyText: { color: 'rgba(255,255,255,0.25)', fontSize: 15 },

@@ -155,6 +155,7 @@
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
 				E654D627B9F216C2DDDFE172 /* [CP] Embed Pods Frameworks */,
+				A7B89D2D2C00100100ABC001 /* Generate Hermes dSYM */,
 				E32D61F5237059FED2CD9A3E /* [CP-User] [RNGoogleMobileAds] Configuration */,
 			);
 			buildRules = (
@@ -325,6 +326,22 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-PhoneRider/Pods-PhoneRider-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		A7B89D2D2C00100100ABC001 /* Generate Hermes dSYM */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework/hermes",
+			);
+			name = "Generate Hermes dSYM";
+			outputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/hermes.framework.dSYM",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n\nHERMES_BINARY=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework/hermes\"\nHERMES_DSYM=\"${DWARF_DSYM_FOLDER_PATH}/hermes.framework.dSYM\"\n\nif [[ ! -f \"$HERMES_BINARY\" ]]; then\n  echo \"Hermes binary not found at $HERMES_BINARY; skipping dSYM generation.\"\n  exit 0\nfi\n\nmkdir -p \"${DWARF_DSYM_FOLDER_PATH}\"\nrm -rf \"$HERMES_DSYM\"\necho \"Generating Hermes dSYM at $HERMES_DSYM\"\nxcrun dsymutil \"$HERMES_BINARY\" -o \"$HERMES_DSYM\" || true\n\nif [[ ! -f \"$HERMES_DSYM/Contents/Resources/DWARF/hermes\" ]]; then\n  echo \"warning: Hermes dSYM was not generated. App Store Connect may report missing Hermes symbols.\"\nfi\n";
+		};
 		E32D61F5237059FED2CD9A3E /* [CP-User] [RNGoogleMobileAds] Configuration */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -380,7 +397,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = PhoneRider/PhoneRider.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = YLQBMX3572;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -394,7 +411,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -402,7 +419,7 @@
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
 				PRODUCT_BUNDLE_IDENTIFIER = com.nickburton.iosrider;
-				PRODUCT_NAME = "iOS Rider";
+				PRODUCT_NAME = "Sketch Rider";
 				SWIFT_OBJC_BRIDGING_HEADER = "PhoneRider/PhoneRider-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -418,7 +435,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = PhoneRider/PhoneRider.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = YLQBMX3572;
 				INFOPLIST_FILE = PhoneRider/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -426,7 +443,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -434,7 +451,7 @@
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
 				PRODUCT_BUNDLE_IDENTIFIER = com.nickburton.iosrider;
-				PRODUCT_NAME = "iOS Rider";
+				PRODUCT_NAME = "Sketch Rider";
 				SWIFT_OBJC_BRIDGING_HEADER = "PhoneRider/PhoneRider-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
