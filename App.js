@@ -29,7 +29,21 @@ const CANVAS_H = SH - 160;
 const GRAVITY = 0.4;
 const FRICTION = 0.995;
 const BOUNCE = 0.3;
+// Collision radius stays at the original 6 so existing/demo/saved tracks ride identically
+// (a 12px collision body stalls in the "Drop off" demo's tighter dips). The rider is drawn 2x.
 const RIDER_RADIUS = 6;
+const RIDER_VISUAL_RADIUS = RIDER_RADIUS * 2;
+const RIDER_SPRITE_SCALE = 1.5; // sprite art was drawn for radius 6; feet sit ~8px below origin
+const RIDER_SPRITE_LIFT = 8 * RIDER_SPRITE_SCALE - RIDER_RADIUS; // keep scaled feet on the line
+const SIM_HZ = 60; // physics always steps at 60Hz regardless of display refresh (60/120Hz ProMotion)
+const SIM_DT_MS = 1000 / SIM_HZ;
+const MAX_SIM_STEPS_PER_FRAME = 5; // avoid spiral-of-death after a hitch/backgrounding
+const PLAY_CAM_ZOOM = 1.35;
+const PLAY_CAM_LEAD = 14; // world units of look-ahead per unit of velocity
+const PLAY_CAM_LEAD_MAX = 140;
+const PLAY_CAM_POS_RATE = 4.5; // per-second exponential follow rate
+const PLAY_CAM_ZOOM_RATE = 2.2;
+const TRAIL_MAX_POINTS = 26;
 const TRACK_WIDTH = 3;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
@@ -62,6 +76,14 @@ const ADMOB_PRODUCTION_INTERSTITIAL_IDS = {
   android: 'ca-app-pub-xxxxxxxxxxxxxxxx/xxxxxxxxxx',
 };
 const CHARACTER_SHOP_ENABLED = false;
+// Halloween event. null = automatic (Oct 15 – Nov 2, device local time); true/false forces it on/off.
+const HALLOWEEN_FORCE = null;
+function isHalloweenSeason(date = new Date()) {
+  const m = date.getMonth();
+  const d = date.getDate();
+  return (m === 9 && d >= 15) || (m === 10 && d <= 2);
+}
+const HALLOWEEN_ACTIVE = HALLOWEEN_FORCE === null ? isHalloweenSeason() : !!HALLOWEEN_FORCE;
 const BOOST_WEEEE_COOLDOWN_MS = 2800;
 const AIR_YIPPEE_DELAY_MS = 450;
 const AIR_YIPPEE_COOLDOWN_MS = 5200;
@@ -260,7 +282,157 @@ const RIDER_TYPES = [
     blurb: 'Chaotic balancing act with sharp lean corrections.',
     motion: { pace: 1.42, bob: 1.35, sway: 1.55, suspension: 0.15, airTilt: 1.5 },
   },
+  {
+    id: 'hoverboard',
+    name: 'Glitch Hoverboarder',
+    productId: 'rider_hoverboard_1usd',
+    priceUsd: 1,
+    color: '#ff4fd8',
+    accent: '#7dfcff',
+    trailColor: '#ff4fd8',
+    launchSpeed: 2.0,
+    topSpeed: 24,
+    icon: '🛹',
+    blurb: 'Floats on a magenta glow deck with twin thruster sparks.',
+    motion: { pace: 1.15, bob: 1.2, sway: 0.8, suspension: 0.3, airTilt: 0.9 },
+  },
+  {
+    id: 'penguin',
+    name: 'Belly-Slide Penguin',
+    productId: 'rider_penguin_1usd',
+    priceUsd: 1,
+    color: '#2a3550',
+    accent: '#ffb02e',
+    trailColor: '#7fd6ff',
+    launchSpeed: 1.9,
+    topSpeed: 23.5,
+    icon: '🐧',
+    blurb: 'Tummy-first toboggan king. Low, slick and fearless.',
+    motion: { pace: 0.9, bob: 0.5, sway: 1.1, suspension: 0.2, airTilt: 1.3 },
+  },
+  {
+    id: 'voltbot',
+    name: 'Volt Bot',
+    productId: 'rider_voltbot_1usd',
+    priceUsd: 1,
+    color: '#b6ff3b',
+    accent: '#3bf0ff',
+    trailColor: '#b6ff3b',
+    launchSpeed: 2.15,
+    topSpeed: 24.5,
+    icon: '🤖',
+    blurb: 'One-wheel robot with a crackling antenna and steady gyro balance.',
+    motion: { pace: 1.25, bob: 0.4, sway: 0.4, suspension: 1.2, airTilt: 0.4 },
+  },
+  {
+    id: 'rocketluge',
+    name: 'Rocket Luge',
+    productId: 'rider_rocketluge_1usd',
+    priceUsd: 1,
+    color: '#ff3b5c',
+    accent: '#ffd23b',
+    trailColor: '#ffb02e',
+    launchSpeed: 2.4,
+    topSpeed: 25.5,
+    icon: '🚀',
+    blurb: 'Feet-first luge strapped to a rocket. Fastest launch in the lineup.',
+    motion: { pace: 1.4, bob: 0.3, sway: 0.3, suspension: 0.6, airTilt: 0.35 },
+  },
+  {
+    id: 'ghost',
+    name: 'Neon Ghost',
+    productId: 'rider_ghost_1usd',
+    priceUsd: 1,
+    color: '#c9b8ff',
+    accent: '#ffffff',
+    trailColor: '#c9b8ff',
+    launchSpeed: 1.85,
+    topSpeed: 23,
+    icon: '👻',
+    blurb: 'A friendly phantom that drifts through the air with a wavy tail.',
+    motion: { pace: 0.8, bob: 1.6, sway: 1.4, suspension: 0.1, airTilt: 1.2 },
+  },
+  {
+    id: 'skater',
+    name: 'Retro Skater',
+    productId: 'rider_skater_1usd',
+    priceUsd: 1,
+    color: '#ffd23b',
+    accent: '#ff4f7b',
+    trailColor: '#ffd23b',
+    launchSpeed: 2.05,
+    topSpeed: 24,
+    icon: '🧢',
+    blurb: 'Backwards cap, pink deck and a classic low crouch.',
+    motion: { pace: 1.1, bob: 0.9, sway: 1.0, suspension: 0.5, airTilt: 0.8 },
+  },
+  {
+    id: 'pumpkinhead',
+    name: 'Pumpkin Rider',
+    productId: 'rider_pumpkinhead_1usd',
+    priceUsd: 1,
+    seasonal: 'halloween',
+    color: '#ff8a1e',
+    accent: '#7a3fd0',
+    trailColor: '#ff8a1e',
+    launchSpeed: 1.95,
+    topSpeed: 23,
+    icon: '🎃',
+    blurb: 'A grinning jack-o-lantern on a straw broom. Free during Halloween.',
+    motion: { pace: 0.9, bob: 1.2, sway: 1.2, suspension: 0.2, airTilt: 1.0 },
+  },
+  {
+    id: 'skeleton',
+    name: 'Bone Sledder',
+    productId: 'rider_skeleton_1usd',
+    priceUsd: 1,
+    seasonal: 'halloween',
+    color: '#7dff5a',
+    accent: '#9b4dff',
+    trailColor: '#7dff5a',
+    launchSpeed: 2.0,
+    topSpeed: 24,
+    icon: '💀',
+    blurb: 'A rattling skeleton on a bone-runner sled. Free during Halloween.',
+    motion: { pace: 1.1, bob: 0.7, sway: 0.9, suspension: 0.5, airTilt: 0.7 },
+  },
+  {
+    id: 'witch',
+    name: 'Moon Witch',
+    productId: 'rider_witch_1usd',
+    priceUsd: 1,
+    seasonal: 'halloween',
+    color: '#9b4dff',
+    accent: '#7dff5a',
+    trailColor: '#b26bff',
+    launchSpeed: 1.9,
+    topSpeed: 23,
+    icon: '🧙',
+    blurb: 'Pointy hat, green grin and a broomstick that loves big air. Free during Halloween.',
+    motion: { pace: 0.85, bob: 1.4, sway: 1.3, suspension: 0.15, airTilt: 1.1 },
+  },
+  {
+    id: 'batglider',
+    name: 'Vampire Glider',
+    productId: 'rider_batglider_1usd',
+    priceUsd: 1,
+    seasonal: 'halloween',
+    color: '#6a2bb8',
+    accent: '#d8203f',
+    trailColor: '#c23cff',
+    launchSpeed: 1.95,
+    topSpeed: 24,
+    icon: '🦇',
+    blurb: 'A caped vampire under bat-wing sails, riding a coffin board. Free during Halloween.',
+    motion: { pace: 0.8, bob: 1.5, sway: 1.4, suspension: 0.2, airTilt: 1.2 },
+  },
 ];
+
+const HALLOWEEN_RIDER_IDS = RIDER_TYPES.filter((r) => r.seasonal === 'halloween').map((r) => r.id);
+// During the event the Halloween riders are free (granted on launch), whether or not the shop is on.
+const DEFAULT_OWNED_RIDERS = ['classic', 'snowboarder', 'sled', ...(HALLOWEEN_ACTIVE ? HALLOWEEN_RIDER_IDS : [])];
+// With the shop off, the in-canvas rider button cycles through these.
+const FREE_RIDER_CYCLE = ['classic', ...(HALLOWEEN_ACTIVE ? HALLOWEEN_RIDER_IDS : [])];
 
 const LINE_TYPES = [
   { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1,   speedDrag: 0,      collidable: true },
@@ -269,8 +441,15 @@ const LINE_TYPES = [
   { id: 'scenery', label: 'Scenery', color: '#b58cff', glow: 'rgba(181,140,255,0.18)', speedMult: 1, speedDrag: 0,      collidable: false },
   { id: 'portal', label: 'Portal', color: '#ff67d8', glow: 'rgba(255,103,216,0.25)', speedMult: 1, speedDrag: 0, collidable: false, special: 'portal' },
   { id: 'trampoline', label: 'Trampoline', color: '#ff8e3c', glow: 'rgba(255,142,60,0.24)', speedMult: 1.04, speedDrag: 0.02, collidable: true, special: 'trampoline' },
+  // Halloween styles: slime rides like a slightly sticky normal line; cobweb is non-collidable scenery.
+  { id: 'slime', label: 'Slime', color: '#7dff5a', glow: 'rgba(125,255,90,0.26)', speedMult: 0.96, speedDrag: -0.01, collidable: true, seasonal: 'halloween', skin: 'slime' },
+  { id: 'cobweb', label: 'Cobweb', color: '#d9d4ea', glow: 'rgba(217,212,234,0.12)', speedMult: 1, speedDrag: 0, collidable: false, seasonal: 'halloween', skin: 'cobweb' },
 ];
-const DRAW_LINE_TYPES = LINE_TYPES.filter((lineTypeEntry) => !lineTypeEntry.special);
+const DRAW_LINE_TYPES = LINE_TYPES.filter((lineTypeEntry) => !lineTypeEntry.special && (!lineTypeEntry.seasonal || HALLOWEEN_ACTIVE));
+// Portal colours; the Halloween skin swaps the pink/violet vortex for slime green and witch purple.
+const PORTAL_SKIN = HALLOWEEN_ACTIVE
+  ? { ring: '#2a0b4a', main: '#7dff5a', inner: '#c58bff', swirlA: '#9b4dff', swirlB: '#c6ff9b', flameA: '#9b4dff', flameB: '#ff8a1e', core: 'rgba(125,255,90,0.3)', coreStroke: '#eaffd8', dotA: '#c6ff9b', dotB: '#ff8a1e', center: '#f4ffe8' }
+  : { ring: '#3f14ff', main: '#ff67d8', inner: '#b777ff', swirlA: '#7f43ff', swirlB: '#ff9bde', flameA: '#b53cff', flameB: '#ff9b3d', core: 'rgba(136,42,255,0.32)', coreStroke: '#ffd0f4', dotA: '#ffd0f4', dotB: '#ff9b3d', center: '#fff1ff' };
 
 const PRESET_LIBRARY = [
   {
@@ -297,6 +476,33 @@ const PRESET_LIBRARY = [
 ];
 
 const DEMO_TRACK_LIBRARY = [
+  {
+    id: 'haunted_hill',
+    name: 'Haunted Hill',
+    difficulty: 'Halloween',
+    description: 'Moonlit graveyard run: pumpkin bounce, a slime slick, cobwebs and a haunted portal finish.',
+    recommendedRiderId: 'pumpkinhead',
+    lines: [
+      { type: 'normal', points: [{ x: -400, y: -200 }, { x: -330, y: -150 }, { x: -260, y: -60 }, { x: -200, y: 30 }, { x: -120, y: 90 }, { x: -20, y: 115 }, { x: 60, y: 130 }] },
+      { type: 'trampoline', points: [{ x: 60, y: 130 }, { x: 100, y: 142 }, { x: 140, y: 146 }, { x: 180, y: 142 }, { x: 220, y: 130 }] },
+      { type: 'boost', points: [{ x: 260, y: 120 }, { x: 330, y: 170 }, { x: 420, y: 225 }, { x: 600, y: 285 }, { x: 800, y: 315 }] },
+      { type: 'slime', points: [{ x: 800, y: 315 }, { x: 875, y: 325 }, { x: 950, y: 332 }, { x: 1025, y: 338 }, { x: 1100, y: 342 }, { x: 1175, y: 348 }] },
+      { type: 'normal', points: [{ x: -100, y: 420 }, { x: 300, y: 480 }, { x: 700, y: 550 }, { x: 1100, y: 610 }, { x: 1500, y: 650 }, { x: 1800, y: 670 }] },
+      { type: 'portal', points: [{ x: 1600, y: 592 }, { x: 1600, y: 657 }] },
+      { type: 'scenery', points: [{ x: 107, y: 453 }, { x: 107, y: 426 }, { x: 108, y: 421 }, { x: 111, y: 417 }, { x: 115, y: 414 }, { x: 120, y: 413 }, { x: 125, y: 414 }, { x: 129, y: 417 }, { x: 132, y: 421 }, { x: 133, y: 426 }, { x: 133, y: 453 }] },
+      { type: 'scenery', points: [{ x: 465, y: 512 }, { x: 465, y: 480 }, { x: 466, y: 475 }, { x: 469, y: 470 }, { x: 474, y: 467 }, { x: 480, y: 466 }, { x: 486, y: 467 }, { x: 491, y: 470 }, { x: 494, y: 475 }, { x: 495, y: 480 }, { x: 495, y: 512 }] },
+      { type: 'scenery', points: [{ x: 820, y: 568 }, { x: 820, y: 522 }] },
+      { type: 'scenery', points: [{ x: 808, y: 536 }, { x: 832, y: 536 }] },
+      { type: 'scenery', points: [{ x: 987, y: 595 }, { x: 987, y: 568 }, { x: 988, y: 563 }, { x: 991, y: 559 }, { x: 995, y: 556 }, { x: 1000, y: 555 }, { x: 1005, y: 556 }, { x: 1009, y: 559 }, { x: 1012, y: 563 }, { x: 1013, y: 568 }, { x: 1013, y: 595 }] },
+      { type: 'scenery', points: [{ x: 1300, y: 630 }, { x: 1300, y: 590 }] },
+      { type: 'scenery', points: [{ x: 1288, y: 604 }, { x: 1312, y: 604 }] },
+      { type: 'scenery', points: [{ x: 1408, y: 642 }, { x: 1408, y: 618 }, { x: 1409, y: 613 }, { x: 1412, y: 610 }, { x: 1415, y: 607 }, { x: 1420, y: 606 }, { x: 1425, y: 607 }, { x: 1428, y: 610 }, { x: 1431, y: 613 }, { x: 1432, y: 618 }, { x: 1432, y: 642 }] },
+      { type: 'scenery', points: [{ x: 676, y: -164 }, { x: 665, y: -169 }, { x: 655, y: -176 }, { x: 646, y: -185 }, { x: 639, y: -195 }, { x: 634, y: -206 }, { x: 631, y: -218 }, { x: 630, y: -230 }, { x: 631, y: -242 }, { x: 634, y: -254 }, { x: 639, y: -265 }, { x: 646, y: -275 }, { x: 655, y: -284 }, { x: 665, y: -291 }, { x: 676, y: -296 }, { x: 704, y: -284 }, { x: 696, y: -278 }, { x: 690, y: -272 }, { x: 684, y: -265 }, { x: 679, y: -257 }, { x: 676, y: -248 }, { x: 674, y: -239 }, { x: 673, y: -230 }, { x: 674, y: -221 }, { x: 676, y: -212 }, { x: 679, y: -203 }, { x: 684, y: -195 }, { x: 690, y: -188 }, { x: 696, y: -182 }, { x: 704, y: -176 }] },
+      { type: 'cobweb', points: [{ x: -470, y: -330 }, { x: -430, y: -300 }, { x: -390, y: -290 }, { x: -350, y: -300 }, { x: -310, y: -330 }] },
+      { type: 'cobweb', points: [{ x: 880, y: 130 }, { x: 920, y: 160 }, { x: 960, y: 170 }, { x: 1000, y: 160 }, { x: 1040, y: 130 }] },
+      { type: 'scenery', points: [{ x: -300, y: 300 }, { x: -300, y: 180 }, { x: -320, y: 140 }, { x: -300, y: 180 }, { x: -270, y: 130 }, { x: -300, y: 220 }, { x: -340, y: 200 }] },
+    ],
+  },
   {
     id: 'drop_off',
     name: 'Drop off',
@@ -603,124 +809,549 @@ function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
   const sway = motion.sway || 0;
   const suspension = motion.suspension || 0;
   const airTilt = motion.airTilt || 0;
+  const OL = '#0b1020';
+  const SKIN = '#f1d1b4';
 
   switch (riderTypeId) {
     case 'classic':
       return (
         <G>
-          <Line x1={-14} y1={6 + bob * 0.4} x2={15} y2={6 - bob * 0.2} stroke="#d4b06f" strokeWidth={2.1} strokeLinecap="round" />
-          <Line x1={-13} y1={8 + bob * 0.6} x2={14} y2={8 - bob * 0.3} stroke="#b08a54" strokeWidth={1.7} strokeLinecap="round" />
+          <Defs>
+            <LinearGradient id="rs_classic_jk" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#ffffff" stopOpacity={0.95} />
+              <Stop offset="0.3" stopColor={primary} />
+              <Stop offset="1" stopColor="#1c5a86" />
+            </LinearGradient>
+          </Defs>
+          <Path d={`M-13,${8.4 + bob * 0.6} L12,${8.4 - bob * 0.3} Q15,${8.2 - bob * 0.3} 15.2,${6.8 - bob * 0.3}`} stroke="#8e9bb0" strokeWidth={1.6} fill="none" strokeLinecap="round" />
+          <Path d={`M-14,${6.4 + bob * 0.4} L13,${6.4 - bob * 0.2} Q16,${6.1 - bob * 0.2} 16.2,${4.6 - bob * 0.2}`} stroke="#eef3fa" strokeWidth={1.9} fill="none" strokeLinecap="round" />
           <G translateY={-bob * 0.8}>
-            <Polygon points="-8,3 8,3 10,-3 -7,-4" fill={primary} />
-            <Circle cx={1} cy={-9} r={4.4} fill="#f1d1b4" />
-            <Path d="M-4,-8 C-2,-13 5,-14 7,-9" stroke="#5c3f2d" strokeWidth={2.2} fill="none" />
-            <Line x1={-4} y1={-1} x2={-10 + sway} y2={3} stroke={accent} strokeWidth={1.8} />
-            <Line x1={4} y1={-1} x2={10 - sway} y2={3} stroke={accent} strokeWidth={1.8} />
+            <Line x1={-3} y1={-3.5} x2={-11 + sway} y2={5.5} stroke="#c3ccd8" strokeWidth={0.9} strokeLinecap="round" />
+            <Circle cx={-11 + sway} cy={5.5} r={0.9} fill="none" stroke="#c3ccd8" strokeWidth={0.6} />
+            <Path d="M-2.5,0 L-5.2,3.2 L-3.4,5.6" stroke="#2a3350" strokeWidth={2.6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M2,0 L5,2.8 L3.8,5.6" stroke="#34406a" strokeWidth={2.6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Rect x={-5.4} y={4.4} width={4} height={1.9} rx={0.7} fill="#151a28" />
+            <Rect x={2.2} y={4.4} width={4} height={1.9} rx={0.7} fill="#151a28" />
+            <Path d="M-4.8,1.2 C-6,-3 -4,-7.4 0,-8 C3.4,-8.2 5.4,-6 5,-2.6 L4.2,1.2 Z" fill="url(#rs_classic_jk)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-0.4,-7.7 C2.6,-7.8 4.6,-5.9 4.7,-3" stroke="#ffffff" strokeOpacity={0.75} strokeWidth={0.7} fill="none" />
+            <Line x1={-4.9} y1={-1.6} x2={4.6} y2={-1.6} stroke={accent} strokeWidth={1} />
+            <Path d={`M2.8,-5.8 L6.2,-3.2 L${8.4 - sway * 0.5},-0.8`} stroke={primary} strokeWidth={2.1} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Line x1={8.4 - sway * 0.5} y1={-0.8} x2={4 - sway} y2={7} stroke="#e2e8f0" strokeWidth={0.9} strokeLinecap="round" />
+            <Circle cx={8.4 - sway * 0.5} cy={-0.8} r={1.1} fill="#151a28" />
+            <Path d="M-2,-11 C-5.2,-11 -7,-8.6 -6.4,-5.8 C-5.4,-7.6 -4,-8.8 -1.6,-9.4 Z" fill="#7a4a2c" stroke={OL} strokeWidth={0.4} />
+            <Circle cx={1.6} cy={-11} r={3.6} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-2.3,-11.2 A3.95,3.95 0 0 1 5.6,-11.6 L5.6,-10.8 L-2.3,-10.4 Z" fill="#f6f8ff" stroke={OL} strokeWidth={0.5} />
+            <Path d="M-0.4,-14 A3.4,3.4 0 0 1 3.6,-14.4" stroke={primary} strokeWidth={1} fill="none" />
+            <Rect x={2.6} y={-11.4} width={3.8} height={1.9} rx={0.9} fill="#ff8fcf" stroke={OL} strokeWidth={0.4} />
+            <Rect x={3.4} y={-11.1} width={1.4} height={0.6} rx={0.3} fill="#ffffff" opacity={0.85} />
           </G>
         </G>
       );
     case 'snowboarder':
       return (
         <G>
-          <Line x1={-14} y1={7 + bob * 0.45} x2={14} y2={6.2 - bob * 0.2} stroke="#d6f5ff" strokeWidth={2.4} strokeLinecap="round" />
+          <Defs>
+            <LinearGradient id="rs_snow_board" x1="0" y1="0" x2="1" y2="0">
+              <Stop offset="0" stopColor="#2b3a66" />
+              <Stop offset="0.5" stopColor={primary} />
+              <Stop offset="1" stopColor="#2b3a66" />
+            </LinearGradient>
+            <LinearGradient id="rs_snow_hood" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={accent} />
+              <Stop offset="0.35" stopColor={primary} />
+              <Stop offset="1" stopColor="#1d7a48" />
+            </LinearGradient>
+          </Defs>
+          <Path d={`M-15,${5.6 + bob * 0.45} Q-15.5,${7.8 + bob * 0.45} -12.5,${8 + bob * 0.45} L12.5,${7.2 - bob * 0.2} Q15.5,${7 - bob * 0.2} 15,${4.8 - bob * 0.2} Z`} fill="url(#rs_snow_board)" stroke={OL} strokeWidth={0.6} />
+          <Line x1={-12} y1={6.1 + bob * 0.4} x2={12} y2={5.4 - bob * 0.2} stroke="#ffffff" strokeOpacity={0.55} strokeWidth={0.5} />
           <G translateY={-bob * 0.75}>
-            <Path d="M-8,2 L8,3 L7,-3 L-7,-4 Z" fill={primary} />
-            <Circle cx={0} cy={-10} r={4.1} fill="#f2d8c1" />
-            <Path d="M-3,-13 C-1,-15 3,-15 5,-12" stroke="#2b3548" strokeWidth={1.9} fill="none" />
-            <Line x1={-5} y1={-1} x2={-11 + sway} y2={3} stroke={accent} strokeWidth={1.6} />
-            <Line x1={5} y1={-1} x2={11 - sway} y2={3} stroke={accent} strokeWidth={1.6} />
+            <Path d="M-3.5,0 L-6,3 L-5,5.4" stroke="#22283a" strokeWidth={2.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M3,0 L6,2.6 L5,5" stroke="#2c3348" strokeWidth={2.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Rect x={-7} y={4.2} width={4.2} height={1.8} rx={0.7} fill="#ff6b4a" />
+            <Rect x={3.2} y={3.8} width={4.2} height={1.8} rx={0.7} fill="#ff6b4a" />
+            <Path d="M-5.6,1.4 C-6.6,-3.4 -3.8,-7.6 0.2,-7.8 C4,-7.8 6,-5 5.4,-1 L4.6,1.4 Z" fill="url(#rs_snow_hood)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M0.2,-7.5 C3.4,-7.5 5.4,-5.2 5.2,-2" stroke="#ffffff" strokeOpacity={0.7} strokeWidth={0.7} fill="none" />
+            <Path d="M-2,-3 L2,-3 L2.4,0 L-2.4,0 Z" fill="#1d7a48" opacity={0.6} />
+            <Path d={`M-4.4,-5.4 L${-9 + sway},${-2.4} L${-12 + sway},${-3.4}`} stroke={primary} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d={`M4.4,-5.4 L${9 - sway},${-4} L${12 - sway},${-6}`} stroke={primary} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={-12 + sway} cy={-3.4} r={1.1} fill="#22283a" />
+            <Circle cx={12 - sway} cy={-6} r={1.1} fill="#22283a" />
+            <Circle cx={0.4} cy={-11} r={3.7} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-3.4,-11.4 C-3.4,-15.6 4.2,-15.6 4.2,-11.4 Z" fill="#2b3548" stroke={OL} strokeWidth={0.5} />
+            <Rect x={-3.6} y={-12.2} width={7.9} height={1.3} rx={0.6} fill={accent} />
+            <Circle cx={0.4} cy={-15.2} r={1.2} fill={primary} />
+            <Rect x={1.2} y={-10.9} width={3.6} height={1.7} rx={0.8} fill="#7ce2ff" stroke={OL} strokeWidth={0.4} />
+            <Rect x={1.8} y={-10.6} width={1.2} height={0.5} rx={0.25} fill="#ffffff" />
           </G>
         </G>
       );
     case 'sled':
       return (
         <G>
-          <Path d="M-14,8 C-11,4 1,3 14,6" stroke="#f8d480" strokeWidth={2.2} fill="none" />
+          <Defs>
+            <LinearGradient id="rs_sled_wood" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#ffe2a6" />
+              <Stop offset="0.5" stopColor={primary} />
+              <Stop offset="1" stopColor="#a5662a" />
+            </LinearGradient>
+          </Defs>
+          <Path d="M-13,8.6 L9,8.6 C13,8.6 15,7 14.4,4.6" stroke="#c8d1de" strokeWidth={1.3} fill="none" strokeLinecap="round" />
+          <Line x1={-9} y1={8.4} x2={-9} y2={6.4} stroke="#8a93a3" strokeWidth={0.9} />
+          <Line x1={6} y1={8.4} x2={6} y2={6.4} stroke="#8a93a3" strokeWidth={0.9} />
+          <Path d="M-14,4.4 L10,4.4 C14,4.4 15.6,2.4 14.6,0 C14,2.2 12.6,3 10,3 L-13,3 Q-14.4,3 -14,4.4 Z" fill="url(#rs_sled_wood)" stroke={OL} strokeWidth={0.6} />
+          <Rect x={-14} y={4.4} width={24} height={2.2} rx={0.6} fill="#a5662a" stroke={OL} strokeWidth={0.5} />
+          <Line x1={-12.5} y1={3.4} x2={10} y2={3.4} stroke="#fff4ce" strokeOpacity={0.7} strokeWidth={0.5} />
           <G translateY={-bob * 0.62}>
-            <Path d="M-10,4 C-7,1 2,1 10,2 C9,5 3,7 -8,8 Z" fill={primary} />
-            <Circle cx={-9} cy={2.4} r={2.4} fill="#f1d6bf" />
-            <Line x1={-3} y1={4} x2={8 - sway * 0.4} y2={6} stroke={accent} strokeWidth={1.6} />
+            <Path d="M-4,2.6 L4,2.6 L7.6,2.4" stroke="#33406a" strokeWidth={2.6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Rect x={6.6} y={0.8} width={2.6} height={2.4} rx={0.8} fill="#1b2030" />
+            <Path d="M-8,3 C-9,-1 -8,-5.6 -4.6,-6.4 C-1.4,-7 0.6,-4.6 0.2,-1 L-0.4,3 Z" fill="#e64a5a" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-4.8,-6.2 C-1.6,-6.8 0.4,-4.6 0.1,-1.6" stroke="#ffffff" strokeOpacity={0.6} strokeWidth={0.6} fill="none" />
+            <Path d={`M-2,-4 L3,-1.6 L${6 - sway * 0.4},1.6`} stroke="#e64a5a" strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={6 - sway * 0.4} cy={1.6} r={0.95} fill="#1b2030" />
+            <Path d={`M-6.4,-6.6 C-9,-6.4 -11,${-5.4 + sway * 0.3} -13,${-6.6 + sway * 0.6} L-12.6,${-4.8 + sway * 0.6} C-10.6,-4 -8.6,-4.6 -6,-5.2 Z`} fill={accent} stroke={OL} strokeWidth={0.4} />
+            <Circle cx={-3.6} cy={-9.6} r={3.5} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Circle cx={-1.8} cy={-9.8} r={0.5} fill="#1b2030" />
+            <Circle cx={-1.4} cy={-8.4} r={0.7} fill="#ff9a9a" opacity={0.7} />
+            <Path d="M-7.2,-10 C-7.2,-14.4 0,-14.4 0,-10 Z" fill="#e64a5a" stroke={OL} strokeWidth={0.5} />
+            <Rect x={-7.4} y={-10.8} width={7.6} height={1.3} rx={0.6} fill={accent} />
+            <Circle cx={-3.6} cy={-14} r={1.3} fill={accent} stroke={OL} strokeWidth={0.4} />
           </G>
         </G>
       );
     case 'comet':
       return (
         <G>
-          <Line x1={-13} y1={7 + bob * 0.4} x2={13} y2={7 - bob * 0.3} stroke="#d9f5ff" strokeWidth={2} strokeLinecap="round" />
+          <Defs>
+            <RadialGradient id="rs_yeti_fur" cx="0.6" cy="0.3" r="0.8">
+              <Stop offset="0" stopColor="#ffffff" />
+              <Stop offset="0.55" stopColor="#e4f6ff" />
+              <Stop offset="1" stopColor={primary} />
+            </RadialGradient>
+          </Defs>
+          <Path d={`M-14,${7 + bob * 0.4} L12,${7 - bob * 0.3} Q15.4,${6.7 - bob * 0.3} 15.6,${5 - bob * 0.3}`} stroke="#5b6b85" strokeWidth={2} fill="none" strokeLinecap="round" />
+          <Line x1={-13} y1={6.3 + bob * 0.4} x2={12} y2={6.3 - bob * 0.3} stroke="#c8f1ff" strokeOpacity={0.6} strokeWidth={0.5} />
           <G translateY={-bob * 0.7}>
-            <Path d="M-10,5 C-9,-2 -4,-8 3,-8 C10,-8 12,-2 10,5 Z" fill={primary} />
-            <Circle cx={2} cy={-11} r={4.6} fill="#eefaff" />
-            <Path d="M-2,-15 C1,-18 5,-18 8,-15" stroke="#c8f1ff" strokeWidth={2} fill="none" />
-            <Line x1={-6} y1={-2} x2={-12 + sway * 0.6} y2={1} stroke="#ffffff" strokeWidth={1.8} />
-            <Line x1={8} y1={-2} x2={13 - sway * 0.6} y2={1} stroke="#ffffff" strokeWidth={1.8} />
-            <Circle cx={4} cy={-11} r={0.9} fill="#335" />
+            <Path d="M-5,0 L-6,5.6 M4,0 L5,5.6" stroke="#d6f1ff" strokeWidth={4} strokeLinecap="round" />
+            <Ellipse cx={-6} cy={5.8} rx={2.6} ry={1.1} fill="#5f7fa0" />
+            <Ellipse cx={5.4} cy={5.8} rx={2.6} ry={1.1} fill="#5f7fa0" />
+            <Path d="M-10,3 C-11,-4 -7,-10 0,-10.4 C7,-10.4 11,-5 10,3 L8,1.6 L6,3.6 L3.6,1.8 L1,3.8 L-1.6,1.8 L-4,3.8 L-6.4,1.8 L-8.4,3.6 Z" fill="url(#rs_yeti_fur)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M0,-10 C6,-10 9.6,-5.6 9.6,-1" stroke="#ffffff" strokeWidth={0.8} fill="none" />
+            <Path d={`M-8,-5 C-11,-3 ${-13 + sway * 0.6},0 ${-13 + sway * 0.6},2.6`} stroke="#e4f6ff" strokeWidth={3} fill="none" strokeLinecap="round" />
+            <Path d={`M8,-5 C11,-4 ${13 - sway * 0.6},-1 ${13.4 - sway * 0.6},1.6`} stroke="#e4f6ff" strokeWidth={3} fill="none" strokeLinecap="round" />
+            <Circle cx={-13 + sway * 0.6} cy={2.8} r={1.4} fill="#7ea4c4" />
+            <Circle cx={13.4 - sway * 0.6} cy={1.8} r={1.4} fill="#7ea4c4" />
+            <Path d="M-3.6,-13 C-5,-17.6 -2,-20 2,-20 C6.4,-20 8.6,-17 7.6,-12.6 C6,-9.6 -2,-9.6 -3.6,-13 Z" fill="url(#rs_yeti_fur)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-2.6,-18.6 L-4.6,-21.6 L-1,-19.6 Z M6,-19 L8,-21.8 L7.2,-18.2 Z" fill="#c9b78a" stroke={OL} strokeWidth={0.4} />
+            <Path d="M0,-16.4 C1.6,-17.4 5.6,-17.2 6.6,-15.6 C7.2,-13 6,-11.6 3.4,-11.4 C1,-11.4 -0.4,-13 0,-16.4 Z" fill="#6f9cc4" />
+            <Circle cx={2} cy={-15.2} r={0.9} fill="#0b1020" />
+            <Circle cx={5.2} cy={-15.2} r={0.9} fill="#0b1020" />
+            <Circle cx={2.3} cy={-15.5} r={0.3} fill="#ffffff" />
+            <Circle cx={5.5} cy={-15.5} r={0.3} fill="#ffffff" />
+            <Path d="M1.6,-13.2 Q3.6,-11.8 5.8,-13.2 L5.2,-12.4 L4.6,-13 L3.6,-12.2 L2.8,-13 L2.2,-12.4 Z" fill="#ffffff" stroke="#0b1020" strokeWidth={0.4} />
           </G>
         </G>
       );
     case 'blaze':
       return (
         <G>
-          <Line x1={-14} y1={6 + bob * 0.35} x2={15} y2={6 - bob * 0.18} stroke="#d0ae72" strokeWidth={2.2} strokeLinecap="round" />
-          <Line x1={-13} y1={8 + bob * 0.45} x2={14} y2={8 - bob * 0.22} stroke="#b38d58" strokeWidth={1.8} strokeLinecap="round" />
+          <Defs>
+            <LinearGradient id="rs_bigfoot_fur" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#c08a5e" />
+              <Stop offset="0.5" stopColor={primary} />
+              <Stop offset="1" stopColor="#5a3820" />
+            </LinearGradient>
+          </Defs>
+          <Path d={`M-13,${8.3 + bob * 0.45} L12,${8.3 - bob * 0.22} Q15,${8 - bob * 0.22} 15.2,${6.6 - bob * 0.22}`} stroke="#8a6a3c" strokeWidth={1.7} fill="none" strokeLinecap="round" />
+          <Path d={`M-14,${6.3 + bob * 0.35} L13,${6.3 - bob * 0.18} Q16,${6 - bob * 0.18} 16.2,${4.4 - bob * 0.18}`} stroke="#d0ae72" strokeWidth={2} fill="none" strokeLinecap="round" />
           <G translateY={-bob * 0.88}>
-            <Path d="M-9,3 C-8,-3 -3,-7 4,-7 C10,-7 11,-1 9,4 Z" fill={primary} />
-            <Circle cx={1} cy={-10.8} r={4.3} fill="#f0cfb0" />
-            <Path d="M-2,-14 C1,-16 5,-16 7,-13" stroke="#5c3f2d" strokeWidth={2} fill="none" />
-            <Line x1={-4} y1={-2} x2={-11 + sway * 0.75} y2={3} stroke={accent} strokeWidth={1.7} />
-            <Line x1={6} y1={-2} x2={12 - sway * 0.75} y2={3} stroke={accent} strokeWidth={1.7} />
+            <Line x1={-4} y1={-4} x2={-12 + sway * 0.75} y2={5} stroke="#8a6a3c" strokeWidth={1.1} strokeLinecap="round" />
+            <Path d="M-4,0 L-6.4,3 L-5,5.2 M3.4,0 L6.4,2.6 L5.4,5.2" stroke="#6e4528" strokeWidth={3.6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Ellipse cx={-5} cy={5.2} rx={3} ry={1.2} fill="#3a2414" />
+            <Ellipse cx={5.8} cy={5.2} rx={3} ry={1.2} fill="#3a2414" />
+            <Path d="M-8.6,2 C-9.6,-4 -6,-9.6 0.6,-9.6 C7,-9.6 10,-4.4 8.6,2 L6.6,0.8 L4.4,2.6 L2,0.8 L-0.4,2.6 L-2.8,0.8 L-5,2.6 L-7,0.8 Z" fill="url(#rs_bigfoot_fur)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M0.6,-9.3 C5.6,-9.3 8.6,-6 8.8,-2" stroke={accent} strokeOpacity={0.8} strokeWidth={0.8} fill="none" />
+            <Path d="M-4,-6.6 L-2.6,-4.6 M-1,-7.4 L0.4,-5.2 M2.4,-7.2 L3.6,-5" stroke="#5a3820" strokeWidth={0.6} strokeLinecap="round" />
+            <Ellipse cx={1.6} cy={-3} rx={3.4} ry={3.2} fill={accent} opacity={0.45} />
+            <Path d={`M6,-6 L10,-3 L${12.4 - sway * 0.75},0`} stroke="#7a4d2e" strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Line x1={12.4 - sway * 0.75} y1={0} x2={8 - sway} y2={6.4} stroke="#8a6a3c" strokeWidth={1.1} strokeLinecap="round" />
+            <Circle cx={12.4 - sway * 0.75} cy={0} r={1.5} fill="#3a2414" />
+            <Path d="M-2.6,-11 C-3.6,-16 -0.6,-18.4 3,-18.2 C7,-18 8.4,-14.6 7.4,-10.8 C5.6,-8.4 -0.6,-8.4 -2.6,-11 Z" fill="url(#rs_bigfoot_fur)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M1.6,-15 C3,-16 6,-16 6.8,-14.4 C7.4,-12.2 6.2,-10.6 4,-10.4 C2,-10.4 1,-12 1.6,-15 Z" fill={accent} />
+            <Path d="M1.8,-15.6 L6.8,-15.4" stroke="#3a2414" strokeWidth={0.9} strokeLinecap="round" />
+            <Circle cx={3} cy={-14.4} r={0.7} fill="#0b1020" />
+            <Circle cx={5.6} cy={-14.4} r={0.7} fill="#0b1020" />
+            <Ellipse cx={4.6} cy={-12.8} rx={1} ry={0.6} fill="#6e4528" />
+            <Path d="M3,-11.4 Q4.4,-10.6 5.8,-11.4" stroke="#3a2414" strokeWidth={0.5} fill="none" />
           </G>
         </G>
       );
     case 'nova':
       return (
         <G>
-          <Path d="M-15,8 C-10,4 2,3 14,6" stroke="#ffd26a" strokeWidth={2.2} fill="none" />
-          <G translateY={-bob * 0.55}>
-            <Path d="M-11,5 C-8,1 2,0 10,2 C9,5 3,7 -8,8 Z" fill={primary} />
-            <Circle cx={-10} cy={3} r={2.6} fill="#f1d4bf" />
-            <Path d="M-11,1 C-7,-1 -3,-1 0,1" stroke="#293043" strokeWidth={1.6} fill="none" />
-            <Line x1={-2} y1={4} x2={8 - sway * 0.5} y2={6} stroke={accent} strokeWidth={1.8} />
-            <Line x1={-5} y1={3} x2={5} y2={5 + airTilt * 0.15} stroke="#d8ecff" strokeWidth={1.3} />
+          <Defs>
+            <LinearGradient id="rs_atv_body" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={accent} />
+              <Stop offset="0.35" stopColor={primary} />
+              <Stop offset="1" stopColor="#a8401c" />
+            </LinearGradient>
+          </Defs>
+          {[-8.6, 8.6].map((wx) => (
+            <G key={wx}>
+              <Circle cx={wx} cy={6.4} r={4} fill="#1a1d26" stroke={OL} strokeWidth={0.6} />
+              <Circle cx={wx} cy={6.4} r={4} fill="none" stroke="#3a3f4e" strokeWidth={1} strokeDasharray="1.2 1" />
+              <Circle cx={wx} cy={6.4} r={1.7} fill="#b9c2d0" />
+              <Circle cx={wx - 0.4} cy={6} r={0.5} fill="#ffffff" />
+            </G>
+          ))}
+          <G translateY={-(suspension * 0.6 + bob * 0.25)}>
+            <Path d="M-8.6,5.6 L-4,2.6 M8.6,5.6 L4,2.6" stroke="#59606e" strokeWidth={1.2} strokeLinecap="round" />
+            <Path d="M-13.6,2.4 C-13.6,0 -11,-1 -8,-0.8 L-4,1 L4,1 L8,-1 C11,-1.4 13.6,0 14,2.4 L11,3.4 L6.6,2.6 L-6.6,2.6 L-11,3.4 Z" fill="url(#rs_atv_body)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-12.6,0.6 C-11,-0.4 -9,-0.6 -8,-0.4 M8.2,-0.6 C10.6,-1 12.6,-0.4 13.4,1" stroke="#ffffff" strokeOpacity={0.75} strokeWidth={0.6} fill="none" />
+            <Rect x={-4.6} y={-0.6} width={9} height={2.2} rx={1} fill="#1e222c" />
+            <Path d="M7,-1.4 L9,-5.6 L11.6,-5.8" stroke="#2a2f3c" strokeWidth={1} fill="none" strokeLinecap="round" />
+            <Circle cx={13.6} cy={1.2} r={0.9} fill="#fff6c2" />
+            <Path d="M-1,0 L2,1.6 L5.4,1.4" stroke="#2c3348" strokeWidth={2.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M-3.4,-0.4 C-4.6,-4.4 -2.6,-8 0.6,-8.2 C3.6,-8.2 4.8,-5.4 4,-2 L3,0 Z" fill="#2b3a66" stroke={OL} strokeWidth={0.6} />
+            <Path d="M0.6,-8 C3,-8 4.4,-6 4.3,-3.4" stroke={accent} strokeOpacity={0.8} strokeWidth={0.6} fill="none" />
+            <Path d={`M2.6,-6 L7,-4.4 L${10.8 - sway * 0.5},${-5.6 + airTilt * 0.15}`} stroke="#2b3a66" strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={10.8 - sway * 0.5} cy={-5.6 + airTilt * 0.15} r={0.9} fill="#151a28" />
+            <Circle cx={1} cy={-11.4} r={3.8} fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Path d="M1.6,-12.6 L5.2,-12.6 C5.4,-10.6 4.6,-9.4 2.6,-9.4 Z" fill="#20283c" />
+            <Path d="M2.2,-12.2 L4.6,-12.2" stroke="#7ce2ff" strokeWidth={0.6} />
+            <Path d="M-2,-12.4 A3.2,3.2 0 0 1 2,-14.8" stroke="#ffffff" strokeOpacity={0.8} strokeWidth={0.7} fill="none" />
+            <Line x1={-2.8} y1={-11} x2={4.6} y2={-11} stroke={accent} strokeWidth={0.6} />
           </G>
         </G>
       );
     case 'dirtbike':
       return (
         <G>
-          <Line x1={-14} y1={8} x2={14} y2={8} stroke="#7a818b" strokeWidth={2.6} strokeLinecap="round" />
-          <Circle cx={-8} cy={8.2} r={2.2} fill="#3f4652" />
-          <Circle cx={9} cy={8.2} r={2.2} fill="#3f4652" />
+          <Defs>
+            <LinearGradient id="rs_dirt_body" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={accent} />
+              <Stop offset="0.35" stopColor={primary} />
+              <Stop offset="1" stopColor="#9c2a1e" />
+            </LinearGradient>
+          </Defs>
+          {[-9, 9.4].map((wx) => (
+            <G key={wx}>
+              <Circle cx={wx} cy={6.4} r={4} fill="none" stroke="#1a1d26" strokeWidth={1.8} />
+              <Circle cx={wx} cy={6.4} r={4.4} fill="none" stroke="#3a3f4e" strokeWidth={0.6} strokeDasharray="0.9 0.8" />
+              <Path d={`M${wx - 3},6.4 L${wx + 3},6.4 M${wx},3.4 L${wx},9.4 M${wx - 2.1},4.3 L${wx + 2.1},8.5 M${wx + 2.1},4.3 L${wx - 2.1},8.5`} stroke="#9aa3b2" strokeWidth={0.35} />
+              <Circle cx={wx} cy={6.4} r={1} fill="#c9d1dd" />
+            </G>
+          ))}
           <G translateY={-(suspension + bob * 0.28)}>
-            <Path d="M-12,5 L-4,-2 L7,-2 L12,3 L8,6 L-11,6 Z" fill="#222a35" />
-            <Path d="M-2,-5 L5,-5 L8,-2 L-1,-2 Z" fill={primary} />
-            <Circle cx={0.8} cy={-10} r={4.0} fill="#f2d5bd" />
-            <Line x1={3} y1={-6.5} x2={9 - sway * 0.35} y2={-3.5 + airTilt * 0.2} stroke={accent} strokeWidth={1.6} />
+            <Path d="M-9,6.4 L-3,2.4 L2,2.4" stroke="#3a3f4e" strokeWidth={1.4} fill="none" strokeLinecap="round" />
+            <Line x1={9.4} y1={6.4} x2={6.4} y2={-2.6} stroke="#c9d1dd" strokeWidth={1.3} strokeLinecap="round" />
+            <Path d="M-3,0 L5,0 L7,-2 L4.6,3.4 L-1.6,3.4 Z" fill="#2a2f3c" stroke={OL} strokeWidth={0.5} />
+            <Path d="M-12.6,-0.6 L-2,-1.6 L1,0.8 L-8,1.6 Z" fill="url(#rs_dirt_body)" stroke={OL} strokeWidth={0.5} />
+            <Path d="M1,-1.8 L7.6,-3.2 L6.6,0.6 L2,0.8 Z" fill="url(#rs_dirt_body)" stroke={OL} strokeWidth={0.5} />
+            <Path d="M7.4,2.6 C9.4,1.8 11.6,2.4 13,3.6 L11,3.8 Z" fill={primary} stroke={OL} strokeWidth={0.4} />
+            <Path d="M-11.6,1.6 L-7,2.8 L-3,2.6" stroke="#b9c2d0" strokeWidth={1.1} fill="none" strokeLinecap="round" />
+            <Path d="M-2,-1.6 L1.6,0 L3,3.6" stroke="#2c3348" strokeWidth={2.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Rect x={2} y={3} width={2.6} height={1.6} rx={0.5} fill="#151a28" />
+            <Path d="M-4.6,-1.6 C-5.4,-5.4 -3,-8.6 0.6,-8.6 C3.4,-8.4 4.4,-6 3.6,-3 L1.6,-1.6 Z" fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Path d="M-3.8,-5 L3.4,-4.4" stroke={accent} strokeWidth={0.8} />
+            <Path d={`M2,-6.4 L5.4,-4.4 L${7.4 - sway * 0.35},${-3.2 + airTilt * 0.2}`} stroke={primary} strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={7.4 - sway * 0.35} cy={-3.2 + airTilt * 0.2} r={0.9} fill="#151a28" />
+            <Circle cx={1} cy={-11.6} r={3.9} fill="#f4f7ff" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-2.6,-12.6 C-1,-15.4 3,-15.6 4.4,-13.6" stroke={primary} strokeWidth={1.2} fill="none" />
+            <Path d="M2.4,-13 L5.4,-12.6 L5,-10.4 L2.6,-10.6 Z" fill="#20283c" />
+            <Path d="M2.8,-12.4 L5,-12.1" stroke="#ffe36a" strokeWidth={0.6} />
+            <Path d="M1.4,-15.6 L6.2,-14.6 L5,-13.6 Z" fill={accent} stroke={OL} strokeWidth={0.3} />
+            <Path d="M4,-10.4 L5.6,-9.2 L3.4,-8.4 Z" fill="#c9d1dd" />
           </G>
         </G>
       );
     case 'car':
       return (
         <G>
-          <Line x1={-14} y1={8} x2={14} y2={8} stroke="#8f959d" strokeWidth={2.4} strokeLinecap="round" />
-          <Circle cx={-8.2} cy={8.1} r={2.6} fill="#3f4652" />
-          <Circle cx={8.7} cy={8.1} r={2.6} fill="#3f4652" />
+          <Defs>
+            <LinearGradient id="rs_car_body" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={accent} />
+              <Stop offset="0.4" stopColor={primary} />
+              <Stop offset="1" stopColor="#1f5f99" />
+            </LinearGradient>
+            <LinearGradient id="rs_car_glass" x1="0" y1="0" x2="1" y2="1">
+              <Stop offset="0" stopColor="#e8f7ff" />
+              <Stop offset="1" stopColor="#3a6a96" />
+            </LinearGradient>
+          </Defs>
+          <Ellipse cx={0} cy={10.2} rx={13} ry={1} fill="#000000" opacity={0.35} />
           <G translateY={-(suspension * 0.8 + bob * 0.18)}>
-            <Path d="M-13,4 L-6,-2 L8,-2 L13,3 L10,6 L-12,6 Z" fill={primary} />
-            <Path d="M-4,-2 L4,-2 L6,1 L-3,1 Z" fill="#d8ecff" />
+            <Path d="M-14.4,4.6 L-14,0.6 C-13.6,-0.6 -12,-1 -10,-1.2 L-6.4,-6 C-5.6,-6.8 -4.6,-7 -3.4,-7 L4,-7 C5.4,-7 6.4,-6.4 7.4,-5 L9.6,-1.4 C12,-1 14,-0.2 14.6,1.6 L14.6,4.6 Z" fill="url(#rs_car_body)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-5.6,-1.6 L-3.6,-5.8 L-0.6,-5.8 L-0.6,-1.6 Z" fill="url(#rs_car_glass)" stroke={OL} strokeWidth={0.4} />
+            <Path d="M0.6,-1.6 L0.6,-5.8 L4,-5.8 C4.8,-5.8 5.4,-5.4 6,-4.6 L8,-1.6 Z" fill="url(#rs_car_glass)" stroke={OL} strokeWidth={0.4} />
+            <Path d="M1.4,-5 L2.8,-5 L1.6,-2.4 Z" fill="#ffffff" opacity={0.7} />
+            <Path d="M-3.2,-6.6 L4.2,-6.6 C5.2,-6.6 6.2,-6 7,-4.8" stroke="#ffffff" strokeOpacity={0.8} strokeWidth={0.6} fill="none" />
+            <Path d="M-13.6,0.6 L13.8,1.2" stroke="#ffffff" strokeOpacity={0.55} strokeWidth={0.5} />
+            <Path d="M-13,2.4 L13,2.4" stroke="#ff5f4a" strokeWidth={0.9} />
+            <Path d="M-15.6,-3.2 L-12,-3.2 L-11.4,-1 M-15.8,-3.4 L-15.8,-1.6" stroke="#1d2230" strokeWidth={1.1} fill="none" strokeLinecap="round" />
+            <Rect x={12.6} y={0.2} width={2.2} height={1.4} rx={0.6} fill="#fff6c2" />
+            <Rect x={-14.8} y={0.4} width={1.4} height={1.4} rx={0.4} fill="#ff4a5a" />
+            <Line x1={-0.1} y1={-1.4} x2={-0.1} y2={4.4} stroke={OL} strokeWidth={0.4} />
           </G>
+          {[-8.4, 8.8].map((wx) => (
+            <G key={wx}>
+              <Circle cx={wx} cy={6.8} r={3.2} fill="#16181f" stroke={OL} strokeWidth={0.5} />
+              <Circle cx={wx} cy={6.8} r={1.8} fill="#c9d1dd" />
+              <Path d={`M${wx - 1.6},6.8 L${wx + 1.6},6.8 M${wx},5.2 L${wx},8.4`} stroke="#6a7284" strokeWidth={0.5} />
+              <Circle cx={wx - 0.6} cy={6.2} r={0.45} fill="#ffffff" />
+            </G>
+          ))}
         </G>
       );
     case 'unicycle':
       return (
         <G>
-          <Circle cx={0} cy={8} r={5.8} fill="#3d424c" />
-          <Circle cx={0} cy={8} r={2.5} fill="#a2a9b6" />
-          <Line x1={0} y1={2.2} x2={0} y2={-6.5} stroke="#d9dce4" strokeWidth={1.6} />
+          <Circle cx={0} cy={5} r={5.4} fill="none" stroke="#1a1d26" strokeWidth={1.8} />
+          <Circle cx={0} cy={5} r={4.4} fill="none" stroke={primary} strokeWidth={0.5} />
+          <Path d="M-4.2,5 L4.2,5 M0,0.8 L0,9.2 M-3,2 L3,8 M3,2 L-3,8" stroke="#a2a9b6" strokeWidth={0.35} />
+          <Circle cx={0} cy={5} r={1.1} fill="#d9dce4" />
           <G translateY={-bob * 0.75}>
-            <Path d="M-4,-1 C-3,-5 1,-7 5,-6 C7,-3 6,1 3,3 Z" fill={primary} />
-            <Circle cx={1.2} cy={-10.4} r={3.8} fill="#f1d5bd" />
-            <Line x1={-1} y1={-2.5} x2={-7 + sway * 0.8} y2={2.5} stroke={accent} strokeWidth={1.5} />
-            <Line x1={3.5} y1={-2.5} x2={8 - sway * 0.8} y2={2.5} stroke={accent} strokeWidth={1.5} />
+            <Line x1={0} y1={5} x2={0.4} y2={-3.4} stroke="#c9d1dd" strokeWidth={1.3} />
+            <Line x1={-0.2} y1={4} x2={-0.2} y2={-2} stroke="#ffffff" strokeOpacity={0.5} strokeWidth={0.4} />
+            <Path d="M-2.6,-3.6 C-2.6,-5 3.6,-5 3.6,-3.6 C3.6,-2.8 -2.6,-2.8 -2.6,-3.6 Z" fill="#1d2230" stroke={OL} strokeWidth={0.4} />
+            <Path d="M-0.6,-3.6 L-1.6,0.6 L-2.4,4.6 M1.6,-3.6 L2.4,0.8 L2.6,5.4" stroke="#2c3348" strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Rect x={-3.8} y={4} width={2.8} height={1.4} rx={0.5} fill={accent} />
+            <Rect x={1.6} y={4.8} width={2.8} height={1.4} rx={0.5} fill={accent} />
+            <Path d="M-3.6,-3.4 C-4.4,-7.4 -2,-10 1,-10 C3.8,-10 5.2,-7.6 4.6,-3.4 Z" fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Path d="M1,-9.7 C3.4,-9.7 4.8,-7.8 4.5,-4.6" stroke="#ffffff" strokeOpacity={0.7} strokeWidth={0.6} fill="none" />
+            <Path d="M-3.4,-6.4 L4.6,-6.4 M-3.2,-4.8 L4.6,-4.8" stroke={accent} strokeWidth={0.6} />
+            <Path d={`M-2.6,-8 L-6,${-6 + sway * 0.3} L${-9 + sway * 0.8},${-8 + sway * 0.4}`} stroke={primary} strokeWidth={1.7} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d={`M3.8,-8 L7,${-6.4 - sway * 0.3} L${10 - sway * 0.8},${-8.4 - sway * 0.4}`} stroke={primary} strokeWidth={1.7} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={-9 + sway * 0.8} cy={-8 + sway * 0.4} r={0.9} fill={SKIN} />
+            <Circle cx={10 - sway * 0.8} cy={-8.4 - sway * 0.4} r={0.9} fill={SKIN} />
+            <Circle cx={1.2} cy={-13.2} r={3.6} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Circle cx={2.8} cy={-13.4} r={0.5} fill="#1b2030" />
+            <Path d="M2.2,-11.8 Q3.2,-11.2 4,-12" stroke="#1b2030" strokeWidth={0.4} fill="none" />
+            <Path d="M-2.6,-13.6 A3.9,3.9 0 0 1 5,-14 L5.4,-13 L-2.8,-12.8 Z" fill={primary} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-0.6,-16.6 L0.4,-15.8 M1.8,-17.2 L1.8,-16 M3.8,-16.6 L3.2,-15.6" stroke={accent} strokeWidth={0.6} strokeLinecap="round" />
+            <Path d="M4.6,-13.4 L7,-13.2 L5.2,-12.6 Z" fill={primary} stroke={OL} strokeWidth={0.3} />
+          </G>
+        </G>
+      );
+    case 'hoverboard':
+      return (
+        <G>
+          <Rect x={-15} y={5} width={30} height={4.5} rx={2.2} fill={primary} />
+          <Rect x={-13} y={9.5} width={26} height={1.4} rx={0.7} fill={accent} opacity={0.9} />
+          <Circle cx={-10} cy={12.5} r={1.8 + suspension * 0.6} fill={accent} opacity={0.75} />
+          <Circle cx={10} cy={12.5} r={1.8 + suspension * 0.6} fill={accent} opacity={0.75} />
+          <G translateY={-bob * 0.8}>
+            <Line x1={-3} y1={5} x2={-1} y2={-2} stroke="#2b2f45" strokeWidth={2.2} strokeLinecap="round" />
+            <Line x1={4} y1={5} x2={2} y2={-2} stroke="#2b2f45" strokeWidth={2.2} strokeLinecap="round" />
+            <Rect x={-4} y={-9} width={8} height={8} rx={2.5} fill="#2b2f45" />
+            <Line x1={-3} y1={-6} x2={-9 + sway} y2={-3} stroke={accent} strokeWidth={1.6} strokeLinecap="round" />
+            <Line x1={3} y1={-6} x2={9 - sway} y2={-8} stroke={accent} strokeWidth={1.6} strokeLinecap="round" />
+            <Circle cx={0} cy={-13} r={4} fill="#f1d1b4" />
+            <Rect x={-4.2} y={-14.5} width={8.4} height={2.4} rx={1.2} fill={accent} />
+          </G>
+        </G>
+      );
+    case 'penguin':
+      return (
+        <G>
+          <G translateY={-bob * 0.3}>
+            <Ellipse cx={0} cy={3} rx={13} ry={5.6} fill={primary} />
+            <Ellipse cx={1} cy={4.2} rx={10} ry={3.6} fill="#f4f7ff" />
+            <Circle cx={12} cy={0.5} r={4.4} fill={primary} />
+            <Circle cx={13.4} cy={-0.6} r={1.1} fill="#ffffff" />
+            <Polygon points="16,0.5 20,1.8 16,2.8" fill={accent} />
+            <Path d={`M-4,-1 L-9,${-6 + sway} L-1,-1 Z`} fill={primary} />
+            <Polygon points="-13,2 -18,0 -18,5" fill={accent} />
+          </G>
+        </G>
+      );
+    case 'voltbot':
+      return (
+        <G>
+          <Circle cx={0} cy={7.5} r={5.4} fill="#1d2230" stroke={primary} strokeWidth={1.4} />
+          <Circle cx={0} cy={7.5} r={1.8} fill={primary} />
+          <G translateY={-bob * 0.5}>
+            <Rect x={-6} y={-6} width={12} height={9} rx={2} fill="#3a4258" stroke={primary} strokeWidth={1} />
+            <Rect x={-5} y={-16} width={10} height={8.5} rx={2.4} fill="#4a536c" stroke={primary} strokeWidth={1} />
+            <Rect x={-3.6} y={-13.5} width={7.2} height={2.6} rx={1.3} fill={accent} />
+            <Line x1={0} y1={-16} x2={1.5 + sway} y2={-22} stroke="#d9dce4" strokeWidth={1.1} />
+            <Circle cx={1.5 + sway} cy={-22.5} r={1.7} fill={primary} />
+            <Line x1={-6} y1={-3} x2={-10} y2={1 + sway * 0.5} stroke={primary} strokeWidth={1.6} strokeLinecap="round" />
+            <Line x1={6} y1={-3} x2={10} y2={1 - sway * 0.5} stroke={primary} strokeWidth={1.6} strokeLinecap="round" />
+          </G>
+        </G>
+      );
+    case 'rocketluge':
+      return (
+        <G>
+          <Defs>
+            <LinearGradient id="rs_luge_rocket" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#ffffff" />
+              <Stop offset="0.4" stopColor={primary} />
+              <Stop offset="1" stopColor="#5a1f2a" />
+            </LinearGradient>
+            <LinearGradient id="rs_luge_flame" x1="1" y1="0" x2="0" y2="0">
+              <Stop offset="0" stopColor="#ffffff" />
+              <Stop offset="0.35" stopColor={accent} />
+              <Stop offset="1" stopColor={accent} stopOpacity={0} />
+            </LinearGradient>
+          </Defs>
+          <Path d="M-15,8.6 L10,8.6 C13.4,8.6 15,7.4 14.6,5.2" stroke="#c9ced8" strokeWidth={1.3} fill="none" strokeLinecap="round" />
+          <Path d="M-14,6.6 L-14,3.4 L10,3.4 C12.6,3.4 13.4,4.6 12.6,6.6 Z" fill="#2a2f40" stroke={OL} strokeWidth={0.5} />
+          <Line x1={-13} y1={4} x2={11} y2={4} stroke="#ffffff" strokeOpacity={0.35} strokeWidth={0.5} />
+          <Line x1={-8} y1={6.6} x2={-8} y2={8.4} stroke="#8a93a3" strokeWidth={0.8} />
+          <Line x1={6} y1={6.6} x2={6} y2={8.4} stroke="#8a93a3" strokeWidth={0.8} />
+          <Path d={`M-17,-1.4 L-${25 + suspension * 3},0.8 L-17,3 Z`} fill="url(#rs_luge_flame)" />
+          <Polygon points="-17,-0.2 -21.4,0.8 -17,1.8" fill="#ffffff" />
+          <Path d="M-17.4,-2.2 L-9.4,-2.2 C-7.6,-2.2 -6.6,-0.8 -6.6,0.8 C-6.6,2.4 -7.6,3.8 -9.4,3.8 L-17.4,3.8 Z" fill="url(#rs_luge_rocket)" stroke={OL} strokeWidth={0.5} />
+          <Path d="M-14,-2.2 L-16,-4.4 L-12,-2.2 Z M-14,3.8 L-16,5.6 L-12,3.8 Z" fill={accent} stroke={OL} strokeWidth={0.3} />
+          <Rect x={-18.2} y={-1.6} width={1.2} height={4.8} rx={0.4} fill="#59606e" />
+          <G translateY={-bob * 0.4}>
+            <Path d="M-5,1.4 L4,1.6 L11.4,0.8" stroke="#2c3348" strokeWidth={2.6} fill="none" strokeLinecap="round" />
+            <Path d="M10.4,-0.6 L13,-0.2 L13,1.8 L10.6,2 Z" fill="#151a28" />
+            <Path d="M-6.4,2.8 C-7,0 -5,-2 -2,-2.2 L3.6,-1.4 C4.6,0 4.2,2 3,2.8 Z" fill={accent} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-5.6,-1.4 L3.4,-1" stroke="#ffffff" strokeOpacity={0.7} strokeWidth={0.5} />
+            <Path d={`M-1,-1.6 L2,${2.2 - sway * 0.2}`} stroke={accent} strokeWidth={1.4} strokeLinecap="round" />
+            <Circle cx={-7.4} cy={-2.6} r={3.4} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-11.2,-2.6 A3.9,3.9 0 0 1 -3.4,-3.4 L-3.6,-1.8 L-11,-1.6 Z" fill="url(#rs_luge_rocket)" stroke={OL} strokeWidth={0.5} />
+            <Path d="M-6.8,-4.2 L-3.6,-4.2 L-3.6,-2.6 L-6.6,-2.6 Z" fill="#20283c" />
+            <Path d="M-6.2,-3.8 L-4.2,-3.8" stroke={accent} strokeWidth={0.5} />
+            <Path d="M-10,-5 A3.4,3.4 0 0 1 -6.6,-6.2" stroke="#ffffff" strokeOpacity={0.85} strokeWidth={0.6} fill="none" />
+          </G>
+        </G>
+      );
+    case 'ghost':
+      return (
+        <G translateY={-bob * 1.0}>
+          <Path d={`M-9,4 C-10,-6 -6,-16 0,-16 C6,-16 10,-6 9,4 L6,${1 + sway} L3,5 L0,${1 - sway} L-3,5 L-6,${1 + sway} Z`} fill={primary} opacity={0.92} />
+          <Ellipse cx={-3.2} cy={-8} rx={1.6} ry={2.2} fill="#2b2050" />
+          <Ellipse cx={3.2} cy={-8} rx={1.6} ry={2.2} fill="#2b2050" />
+          <Ellipse cx={0} cy={-3.5} rx={1.6} ry={1.1} fill="#2b2050" />
+          <Ellipse cx={0} cy={9} rx={8} ry={1.6} fill={accent} opacity={0.35} />
+        </G>
+      );
+    case 'pumpkinhead':
+      return (
+        <G>
+          <Defs>
+            <RadialGradient id="rs_pump_head" cx="40%" cy="35%" r="70%">
+              <Stop offset="0" stopColor="#ffd08a" />
+              <Stop offset="0.45" stopColor={primary} />
+              <Stop offset="1" stopColor="#a8400c" />
+            </RadialGradient>
+          </Defs>
+          <Line x1={-12} y1={6.4} x2={14} y2={6.4} stroke="#7a4a22" strokeWidth={1.4} strokeLinecap="round" />
+          <Line x1={-11} y1={6} x2={13} y2={6} stroke="#c08a5e" strokeOpacity={0.7} strokeWidth={0.4} />
+          <Path d={`M-12,5 L-20,${2.4 - sway * 0.5} L-21,${6.4} L-20,${10.2 + sway * 0.5} L-12,7.8 Z`} fill="#e0b45a" stroke={OL} strokeWidth={0.5} />
+          <Path d="M-14,5.6 L-19,4.4 M-14,7.2 L-19,8.6 M-15,6.4 L-20,6.4" stroke="#9a6a24" strokeWidth={0.4} />
+          <Rect x={-13} y={4.6} width={1.6} height={3.6} rx={0.4} fill={accent} stroke={OL} strokeWidth={0.3} />
+          <G translateY={-bob * 0.6}>
+            <Path d="M-2,5.6 L3,8.4 L5,8.4" stroke="#2a1a3a" strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d={`M-6,5.6 C-7,0 -5,-5 -1,-5.4 C2.6,-5.4 3.6,-1 2.6,5.6 Z`} fill={accent} stroke={OL} strokeWidth={0.6} />
+            <Path d={`M-5.4,-3 C-9,-2 -11,${0 + sway * 0.4} -13.4,${2 + sway * 0.8} L-6,4 Z`} fill="#4a1f72" stroke={OL} strokeWidth={0.4} />
+            <Path d="M0,-2.6 L5,3 L7,5.4" stroke={accent} strokeWidth={1.6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={7} cy={5.6} r={0.95} fill="#2a1a3a" />
+            <Ellipse cx={-1.4} cy={-10} rx={5.4} ry={4.4} fill="url(#rs_pump_head)" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-1.4,-14.2 C-2.4,-12 -2.4,-8 -1.4,-5.8 M-4.4,-13.4 C-6,-11 -6,-8.4 -4.6,-6.4 M1.6,-13.4 C3.2,-11 3.2,-8.4 1.8,-6.4" stroke="#b8501a" strokeWidth={0.45} fill="none" />
+            <Path d="M-1.6,-14.4 C-1.4,-16 -0.4,-16.8 0.8,-17" stroke="#3f7a2a" strokeWidth={1.2} strokeLinecap="round" fill="none" />
+            <Polygon points="0.4,-11.8 2.2,-11.8 1.3,-10.2" fill="#ffe14a" />
+            <Polygon points="-3.6,-11.8 -1.8,-11.8 -2.7,-10.2" fill="#ffe14a" />
+            <Path d="M-4,-8.6 L-3,-7.6 L-2,-8.4 L-1,-7.4 L0,-8.4 L1,-7.6 L2.4,-8.6 L1.8,-7 L-3.2,-7 Z" fill="#ffe14a" />
+          </G>
+        </G>
+      );
+    case 'skeleton':
+      return (
+        <G>
+          <Path d="M-14,8.6 L9,8.6 C13,8.6 15,7 14.4,4.6" stroke="#efe9d6" strokeWidth={1.4} fill="none" strokeLinecap="round" />
+          <Circle cx={-14.2} cy={8.6} r={1.1} fill="#efe9d6" stroke={OL} strokeWidth={0.3} />
+          <Circle cx={14.6} cy={4} r={1.1} fill="#efe9d6" stroke={OL} strokeWidth={0.3} />
+          <Line x1={-9} y1={8.4} x2={-9} y2={5.6} stroke="#d6cfb8" strokeWidth={1} />
+          <Line x1={6} y1={8.4} x2={6} y2={5.6} stroke="#d6cfb8" strokeWidth={1} />
+          <Rect x={-14} y={3.6} width={25} height={2.4} rx={1.2} fill="#3a2f4a" stroke={OL} strokeWidth={0.5} />
+          <Path d="M-12,4.8 L9,4.8" stroke={primary} strokeWidth={0.6} strokeDasharray="1.2 1.2" />
+          <G translateY={-bob * 0.6}>
+            <Path d="M-3,3.2 L3,3 L7.6,2.6" stroke="#efe9d6" strokeWidth={1.1} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M-3,2.2 L3,2" stroke="#efe9d6" strokeWidth={1.1} strokeLinecap="round" />
+            <Ellipse cx={8.2} cy={2.6} rx={1.4} ry={0.8} fill="#efe9d6" stroke={OL} strokeWidth={0.3} />
+            <Path d="M-5.6,3 L-5.4,-5" stroke="#efe9d6" strokeWidth={1.2} strokeLinecap="round" />
+            <Path d="M-7.6,-3.6 L-3.4,-3.6 M-7.8,-1.8 L-3.4,-1.8 M-7.4,0 L-3.6,0" stroke="#efe9d6" strokeWidth={0.8} strokeLinecap="round" />
+            <Ellipse cx={-5.4} cy={2.8} rx={2.6} ry={1} fill="#efe9d6" stroke={OL} strokeWidth={0.3} />
+            <Path d={`M-4.6,-3.6 L1,-1.4 L${5.6 - sway * 0.4},1.4`} stroke="#efe9d6" strokeWidth={1} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={5.8 - sway * 0.4} cy={1.6} r={0.8} fill="#efe9d6" />
+            <Path d={`M-6,-5 C-9,-4.6 -11,${-3 + sway * 0.4} -13.6,${-3.6 + sway * 0.8} L-13,${-2 + sway * 0.6} C-10.6,-1.6 -8.6,-2.6 -6,-3.4 Z`} fill={accent} stroke={OL} strokeWidth={0.4} />
+            <Circle cx={-4.4} cy={-9.4} r={3.7} fill="#f4efdf" stroke={OL} strokeWidth={0.5} />
+            <Rect x={-4.6} y={-7.2} width={3.4} height={2.2} rx={0.6} fill="#f4efdf" stroke={OL} strokeWidth={0.4} />
+            <Path d="M-3.8,-6.2 L-1.6,-6.2 M-3,-7 L-3,-5.4 M-2.2,-7 L-2.2,-5.4" stroke={OL} strokeWidth={0.3} />
+            <Ellipse cx={-2.4} cy={-9.8} rx={1.2} ry={1.4} fill="#1b1430" />
+            <Ellipse cx={-5.6} cy={-9.8} rx={1.1} ry={1.3} fill="#1b1430" />
+            <Circle cx={-2.4} cy={-9.8} r={0.4} fill={primary} />
+            <Polygon points="-4,-8.4 -3.4,-7.6 -4.4,-7.6" fill="#1b1430" />
+          </G>
+        </G>
+      );
+    case 'witch':
+      return (
+        <G>
+          <Line x1={-12} y1={6.4} x2={14} y2={5.6} stroke="#6a3f1e" strokeWidth={1.4} strokeLinecap="round" />
+          <Path d={`M-12,5 L-20,${2.2 - sway * 0.5} L-21.4,6.6 L-20,${10.6 + sway * 0.5} L-12,7.8 Z`} fill="#c99a48" stroke={OL} strokeWidth={0.5} />
+          <Path d="M-14,5.6 L-19,4.2 M-14,7.2 L-19,9 M-15,6.4 L-20.4,6.6" stroke="#8a5f20" strokeWidth={0.4} />
+          <Rect x={-13} y={4.6} width={1.6} height={3.6} rx={0.4} fill={primary} stroke={OL} strokeWidth={0.3} />
+          <G translateY={-bob * 0.6}>
+            <Path d="M-1,5.6 L3,8.6 L5.6,8.2" stroke="#1d1424" strokeWidth={1.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M5,7.6 L7.4,8.2 L5.6,9" fill="#1d1424" />
+            <Path d={`M-7.4,6.6 C-8,1 -6,-4.6 -1.6,-5 C2,-5 3.2,-1 3,6 L0,${7 + sway * 0.4} L-3,${6.2} Z`} fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Path d="M-6,0 L2.4,0" stroke={accent} strokeWidth={0.9} />
+            <Path d="M-0.6,-2.6 L4.6,1.6 L8,4.6" stroke={primary} strokeWidth={1.6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Circle cx={8.2} cy={4.9} r={0.9} fill="#7fd36a" />
+            <Path d={`M-4.6,-8 C-8,-7 -10.6,${-5 + sway * 0.6} -12.6,${-1.6 + sway} L-7,-3 Z`} fill="#ff8a1e" stroke={OL} strokeWidth={0.4} />
+            <Circle cx={-2.2} cy={-8.6} r={3.4} fill="#8fdc6e" stroke={OL} strokeWidth={0.5} />
+            <Path d="M0.6,-8.6 L2.6,-7.6 L0.8,-7.4 Z" fill="#7fc95c" stroke={OL} strokeWidth={0.3} />
+            <Circle cx={-0.8} cy={-9} r={0.55} fill="#1d1424" />
+            <Path d="M-1.6,-6.8 Q-0.6,-6.2 0.2,-6.8" stroke="#1d1424" strokeWidth={0.4} fill="none" />
+            <Ellipse cx={-2.4} cy={-11.2} rx={6.4} ry={1.3} fill="#1d1424" stroke={OL} strokeWidth={0.4} />
+            <Path d={`M-5.8,-11.4 L-2,-20 L${-6 - sway * 0.6},-21.6 L-0.8,-11.4 Z`} fill="#241a2e" stroke={OL} strokeWidth={0.5} />
+            <Rect x={-5.4} y={-13} width={4.4} height={1.2} fill={accent} />
+          </G>
+        </G>
+      );
+    case 'batglider':
+      return (
+        <G>
+          <Path d="M-11,6.6 L10,6.6 L12,8 L-13,8 Z" fill="#3a1a2a" stroke={OL} strokeWidth={0.5} />
+          <Path d="M-12,8.6 L11,8.6" stroke="#8a2a3a" strokeWidth={1} strokeLinecap="round" />
+          <Path d="M-9,7.3 L9,7.3" stroke={accent} strokeWidth={0.4} />
+          <G translateY={-bob * 0.8}>
+            <Path d={`M-15,${-15 - sway * 0.8} C-11,-19 -6,-20 -1,-19 C4,-20 9,-19 13,${-15 - sway * 0.8} C10,-15.6 8.6,-14 8,-12.6 C6,-14 4,-14 2.4,-12.6 C1,-14.2 -3,-14.2 -4.4,-12.6 C-6,-14 -8,-14 -9.6,-12.6 C-10.6,-14 -12.6,-15 -15,${-15 - sway * 0.8} Z`} fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Path d="M-1,-19 L-9.6,-12.6 M-1,-19 L-4.4,-12.6 M-1,-19 L2.4,-12.6 M-1,-19 L8,-12.6" stroke="#2a0f3a" strokeWidth={0.4} />
+            <Path d="M-7,-14 L-2,-6 M5,-14 L1,-6" stroke="#4a4f60" strokeWidth={0.6} />
+            <Path d="M-2.4,0 L-2,6.4 M1.6,0 L2.4,6.4" stroke="#1a1424" strokeWidth={1.8} strokeLinecap="round" />
+            <Path d={`M-3.6,1 C-4.4,-3 -3,-6 0,-6 C3,-6 3.8,-3 3,1 Z`} fill="#1a1424" stroke={OL} strokeWidth={0.5} />
+            <Path d="M-0.6,-5.6 L0,-2 L0.6,-5.6 Z" fill="#ffffff" />
+            <Path d={`M-3.4,-5 C-7,-4 -10,${-1 + sway * 0.6} -12.6,${3 + sway}  L-8,${2 + sway * 0.6} L-5,4 L-3,1 Z`} fill={accent} stroke={OL} strokeWidth={0.4} />
+            <Path d="M-2.8,-5 L-1,-7 L1,-7 L2.8,-5" stroke="#c81e3c" strokeWidth={0.9} fill="none" />
+            <Path d="M-2,-4.6 L-5,-12.6 M2,-4.6 L4,-12.6" stroke="#e8dcd0" strokeWidth={0.9} strokeLinecap="round" />
+            <Circle cx={0.2} cy={-9.4} r={3.2} fill="#e8e2f0" stroke={OL} strokeWidth={0.5} />
+            <Path d="M-3.2,-9.4 C-3.4,-12.6 -1,-13.4 0.2,-11.6 C1.4,-13.4 3.8,-12.6 3.4,-9.4 C2.6,-10.8 1.2,-11 0.2,-10.6 C-0.8,-11 -2.4,-10.8 -3.2,-9.4 Z" fill="#141022" />
+            <Circle cx={1.4} cy={-9} r={0.55} fill="#ff2a4a" />
+            <Path d="M0.6,-7.4 L0.9,-6.6 L1.2,-7.4" fill="#ffffff" />
+          </G>
+        </G>
+      );
+    case 'skater':
+      return (
+        <G>
+          <Path d="M-14,5 Q-15,2 -12,3 L12,3 Q15,2 14,5 Z" fill={accent} />
+          <Circle cx={-9} cy={8.4} r={2.1} fill="#ffffff" />
+          <Circle cx={9} cy={8.4} r={2.1} fill="#ffffff" />
+          <G translateY={-bob * 0.8}>
+            <Line x1={-4} y1={3} x2={-2} y2={-3} stroke="#3d5bd9" strokeWidth={2.4} strokeLinecap="round" />
+            <Line x1={5} y1={3} x2={2} y2={-3} stroke="#3d5bd9" strokeWidth={2.4} strokeLinecap="round" />
+            <Path d="M-5,-2 L5,-2 L4,-10 L-4,-10 Z" fill={primary} />
+            <Line x1={-4} y1={-8} x2={-10 + sway} y2={-5} stroke="#f1d1b4" strokeWidth={1.6} strokeLinecap="round" />
+            <Line x1={4} y1={-8} x2={10 - sway} y2={-11} stroke="#f1d1b4" strokeWidth={1.6} strokeLinecap="round" />
+            <Circle cx={0} cy={-14} r={4} fill="#c98f62" />
+            <Path d="M-4.4,-15 A4.4,4.4 0 0 1 4.4,-15 Z" fill={accent} />
+            <Rect x={-8} y={-16} width={4.4} height={1.5} rx={0.7} fill={accent} />
           </G>
         </G>
       );
@@ -812,7 +1443,7 @@ function LineRider() {
   const [trail, setTrail] = useState([]);
   const [crashed, setCrashed] = useState(false);
   const [crashReason, setCrashReason] = useState('wipeout');
-  const [ownedRiders, setOwnedRiders] = useState(['classic', 'snowboarder', 'sled']);
+  const [ownedRiders, setOwnedRiders] = useState(DEFAULT_OWNED_RIDERS);
   const [activeRiderId, setActiveRiderId] = useState('classic');
   const [purchaseBusyId, setPurchaseBusyId] = useState(null);
   const [paymentLedger, setPaymentLedger] = useState({});
@@ -828,6 +1459,8 @@ function LineRider() {
 
   // Camera: panX/panY in screen-space, zoom multiplier
   const [cam, setCam] = useState({ x: 0, y: 0, zoom: 1 });
+  const prePlayCamRef = useRef(null);
+  const simFrameRef = useRef(0);
   const camRef = useRef({ x: 0, y: 0, zoom: 1 });
   // Snapshot at gesture start for pinch/pan
   const camStartRef = useRef({ x: 0, y: 0, zoom: 1 });
@@ -1151,6 +1784,34 @@ function LineRider() {
     setCam(next);
   }, [canvasSize.height, canvasSize.width]);
 
+  // Defined before any callback that lists them as deps (was a TDZ crash on web/JSC).
+  const stopPlay = useCallback(() => {
+    setPlaying(false);
+    if (prePlayCamRef.current) {
+      camRef.current = { ...prePlayCamRef.current };
+      setCam({ ...prePlayCamRef.current });
+      prePlayCamRef.current = null;
+    }
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    riderRef.current = null;
+    if (!prePlayCamRef.current) prePlayCamRef.current = { ...camRef.current };
+    trailRef.current = [];
+    stallSinceRef.current = null;
+    noLandingSinceRef.current = null;
+    crashSoundPlayedRef.current = false;
+    airStartedAtRef.current = null;
+    airYippeePlayedRef.current = false;
+    wasTouchingBoostRef.current = false;
+    lastPortalFrameRef.current = -Infinity;
+    prevOnGroundRef.current = false;
+    setRider(null);
+    setTrail([]);
+    setCrashReason('wipeout');
+    setCrashed(false);
+  }, []);  const resetView = useCallback(() => {
+    camRef.current = { x: 0, y: 0, zoom: 1 };
+    setCam({ x: 0, y: 0, zoom: 1 });
+  }, []);
   const fitTrackInView = useCallback(() => {
     const bounds = getLinesBounds(linesRef.current);
     if (!bounds) return;
@@ -1317,11 +1978,14 @@ function LineRider() {
     setCurrentStroke([]);
     setTool('draw');
     setShowDemoTracks(false);
+    if (demoTrack.recommendedRiderId && ownedRiders.includes(demoTrack.recommendedRiderId)) {
+      setActiveRiderId(demoTrack.recommendedRiderId);
+    }
     requestAnimationFrame(() => {
       resetView();
       requestAnimationFrame(() => fitTrackInView());
     });
-  }, [fitTrackInView, resetView, stopPlay]);
+  }, [fitTrackInView, ownedRiders, resetView, stopPlay]);
 
   useEffect(() => {
     if (!CHARACTER_SHOP_ENABLED) return;
@@ -1649,32 +2313,13 @@ function LineRider() {
     setPlaying(true);
   }, [activeRiderId, lines, maybeShowPlayInterstitial]);
 
-  const stopPlay = useCallback(() => {
-    setPlaying(false);
-    if (animRef.current) cancelAnimationFrame(animRef.current);
-    riderRef.current = null;
-    trailRef.current = [];
-    stallSinceRef.current = null;
-    noLandingSinceRef.current = null;
-    crashSoundPlayedRef.current = false;
-    airStartedAtRef.current = null;
-    airYippeePlayedRef.current = false;
-    wasTouchingBoostRef.current = false;
-    lastPortalFrameRef.current = -Infinity;
-    prevOnGroundRef.current = false;
-    setRider(null);
-    setTrail([]);
-    setCrashReason('wipeout');
-    setCrashed(false);
-  }, []);
+
 
   /* ══════════ PHYSICS LOOP ══════════ */
   useEffect(() => {
     if (!playing) return;
-    const tick = () => {
-      const r = riderRef.current;
-      if (!r) return;
-      if (!r.crashed) {
+    const simulateStep = (r) => {
+      {
         let grounded = false;
         let touchedBoost = false;
         const speed = Math.hypot(r.vx, r.vy);
@@ -1690,7 +2335,7 @@ function LineRider() {
             const pts = linePoints(line);
             const cfg = lineTypeConfig(lineType(line));
             if (cfg.special === 'portal') {
-              if (frameCountRef.current - lastPortalFrameRef.current < PORTAL_COOLDOWN_FRAMES) continue;
+              if (simFrameRef.current - lastPortalFrameRef.current < PORTAL_COOLDOWN_FRAMES) continue;
               for (let i = 0; i < pts.length - 1; i++) {
                 const portalDist = distToSeg(r.x, r.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
                 if (portalDist <= PORTAL_TRIGGER_RADIUS) {
@@ -1705,7 +2350,7 @@ function LineRider() {
                     r.onGround = false;
                     r.crashed = false;
                     grounded = false;
-                    lastPortalFrameRef.current = frameCountRef.current;
+                    lastPortalFrameRef.current = simFrameRef.current;
                     noLandingSinceRef.current = null;
                     stallSinceRef.current = null;
                     airStartedAtRef.current = null;
@@ -1852,18 +2497,58 @@ function LineRider() {
         }
 
         trailRef.current.push({ x: r.x, y: r.y });
-        if (trailRef.current.length > 200) trailRef.current.shift();
+        if (trailRef.current.length > TRAIL_MAX_POINTS) trailRef.current.shift();
+      }
+      simFrameRef.current++;
+    };
 
-        // Camera follow
+    let lastTime = null;
+    let accumulator = 0;
+    let lastRenderAt = 0;
+    const tick = (ts) => {
+      const r = riderRef.current;
+      if (!r) return;
+      const nowTs = typeof ts === 'number' ? ts : Date.now();
+      const frameMs = lastTime == null ? SIM_DT_MS : Math.min(250, nowTs - lastTime);
+      lastTime = nowTs;
+      accumulator += frameMs;
+      let steps = 0;
+      while (accumulator >= SIM_DT_MS && steps < MAX_SIM_STEPS_PER_FRAME) {
+        if (!r.crashed) simulateStep(r);
+        accumulator -= SIM_DT_MS;
+        steps++;
+      }
+      if (steps >= MAX_SIM_STEPS_PER_FRAME) accumulator = 0;
+
+      if (!r.crashed) {
+        // Camera follow: dt-based exponential smoothing toward rider + velocity lead, zoomed in.
+        const dtSec = frameMs / 1000;
         const c = camRef.current;
-        const tx = canvasSize.width / 2 - r.x * c.zoom;
-        const ty = canvasSize.height / 2 - r.y * c.zoom;
-        c.x += (tx - c.x) * 0.06;
-        c.y += (ty - c.y) * 0.06;
+        const zoomK = 1 - Math.exp(-PLAY_CAM_ZOOM_RATE * dtSec);
+        const posK = 1 - Math.exp(-PLAY_CAM_POS_RATE * dtSec);
+        const prevZoom = c.zoom;
+        const nextZoom = prevZoom + (PLAY_CAM_ZOOM - prevZoom) * zoomK;
+        // keep the screen-center world point fixed while zooming, then follow
+        const cx = canvasSize.width / 2;
+        const cy = canvasSize.height / 2;
+        const wcx = (cx - c.x) / prevZoom;
+        const wcy = (cy - c.y) / prevZoom;
+        c.zoom = nextZoom;
+        c.x = cx - wcx * nextZoom;
+        c.y = cy - wcy * nextZoom;
+        let leadX = r.vx * PLAY_CAM_LEAD;
+        let leadY = r.vy * PLAY_CAM_LEAD * 0.6;
+        const leadLen = Math.hypot(leadX, leadY);
+        if (leadLen > PLAY_CAM_LEAD_MAX) { leadX *= PLAY_CAM_LEAD_MAX / leadLen; leadY *= PLAY_CAM_LEAD_MAX / leadLen; }
+        const targetX = cx - (r.x + leadX) * c.zoom;
+        const targetY = cy - (r.y + leadY) * c.zoom;
+        c.x += (targetX - c.x) * posK;
+        c.y += (targetY - c.y) * posK;
       }
 
-      frameCountRef.current++;
-      if (frameCountRef.current % 2 === 0) {
+      // Publish to React at ~30Hz regardless of display refresh.
+      if (nowTs - lastRenderAt >= 32) {
+        lastRenderAt = nowTs;
         setRider(riderRef.current ? { ...riderRef.current } : null);
         setTrail([...trailRef.current]);
         setCam({ ...camRef.current });
@@ -1871,14 +2556,11 @@ function LineRider() {
       animRef.current = requestAnimationFrame(tick);
     };
     frameCountRef.current = 0;
+    simFrameRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
   }, [activeRiderId, canvasSize.height, canvasSize.width, playSfx, playing]);
 
-  const resetView = useCallback(() => {
-    camRef.current = { x: 0, y: 0, zoom: 1 };
-    setCam({ x: 0, y: 0, zoom: 1 });
-  }, []);
 
   /* ══════════ DERIVED ══════════ */
   const startAnchor = getStartAnchor(lines);
@@ -1917,7 +2599,10 @@ function LineRider() {
   const zoomPct = Math.round(cam.zoom * 100);
   const activeRiderCfg = riderConfig(activeRiderId);
   const currentRiderCfg = rider ? riderConfig(rider.riderTypeId || activeRiderId) : activeRiderCfg;
-  const demoTracks = DEMO_TRACK_LIBRARY;
+  // Haunted Hill sits first during the Halloween event, last otherwise.
+  const demoTracks = HALLOWEEN_ACTIVE
+    ? DEMO_TRACK_LIBRARY
+    : [...DEMO_TRACK_LIBRARY.slice(1), DEMO_TRACK_LIBRARY[0]];
   const rAngle = rider
     ? (rider.onGround ? rider.angle : Math.atan2(rider.vy || 0, rider.vx || 0)) * (180 / Math.PI)
     : 0;
@@ -2094,8 +2779,8 @@ function LineRider() {
           <Svg width={canvasSize.width} height={canvasSize.height} style={StyleSheet.absoluteFill}>
             <Defs>
               <LinearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor="#0a0a1a" />
-                <Stop offset="1" stopColor="#1a1a2e" />
+                <Stop offset="0" stopColor={HALLOWEEN_ACTIVE ? '#12051f' : '#0a0a1a'} />
+                <Stop offset="1" stopColor={HALLOWEEN_ACTIVE ? '#2c0f45' : '#1a1a2e'} />
               </LinearGradient>
               <RadialGradient id="portalHaze" cx="50%" cy="50%" r="50%">
                 <Stop offset="0" stopColor="#12001d" stopOpacity="0.92" />
@@ -2105,6 +2790,21 @@ function LineRider() {
               </RadialGradient>
             </Defs>
             <Rect x="0" y="0" width={canvasSize.width} height={canvasSize.height} fill="url(#bg)" />
+            {HALLOWEEN_ACTIVE && (
+              <G>
+                {/* Seasonal sky: fixed to the screen, behind the track. */}
+                <Circle cx={canvasSize.width - 70} cy={88} r={64} fill="#ffd9a0" opacity={0.08} />
+                <Circle cx={canvasSize.width - 70} cy={88} r={40} fill="#ffe7b8" opacity={0.92} />
+                <Circle cx={canvasSize.width - 82} cy={78} r={7} fill="#e8c98e" opacity={0.7} />
+                <Circle cx={canvasSize.width - 58} cy={102} r={5} fill="#e8c98e" opacity={0.6} />
+                <Circle cx={canvasSize.width - 60} cy={70} r={3.4} fill="#e8c98e" opacity={0.6} />
+                {[[0.08, 0.06], [0.22, 0.14], [0.36, 0.05], [0.5, 0.18], [0.62, 0.08], [0.14, 0.3], [0.44, 0.34], [0.72, 0.28], [0.9, 0.4], [0.3, 0.46]].map(([fx, fy], k) => (
+                  <Circle key={k} cx={fx * canvasSize.width} cy={fy * canvasSize.height} r={k % 3 === 0 ? 1.6 : 1} fill="#e9d8ff" opacity={0.55} />
+                ))}
+                <Path d={`M${canvasSize.width * 0.18},${canvasSize.height * 0.1} q6,-6 12,0 q6,-6 12,0 q-6,2 -12,6 q-6,-4 -12,-6 z`} fill="#0b0414" opacity={0.85} />
+                <Path d={`M${canvasSize.width * 0.55},${canvasSize.height * 0.06} q5,-5 10,0 q5,-5 10,0 q-5,2 -10,5 q-5,-3 -10,-5 z`} fill="#0b0414" opacity={0.85} />
+              </G>
+            )}
 
             <G translateX={cam.x} translateY={cam.y} scale={cam.zoom}>
               {/* Track */}
@@ -2133,26 +2833,26 @@ function LineRider() {
                             stroke="#ffffff" strokeWidth={1.4} strokeDasharray="4 4" opacity={0.72} />
                         )}
                         <Ellipse cx={mid.x} cy={mid.y} rx={21} ry={45} fill="#080013" opacity={0.78} />
-                        <Ellipse cx={mid.x} cy={mid.y} rx={21} ry={45} fill="none" stroke="#3f14ff"
+                        <Ellipse cx={mid.x} cy={mid.y} rx={21} ry={45} fill="none" stroke={PORTAL_SKIN.ring}
                           strokeWidth={11} opacity={0.42} />
-                        <Ellipse cx={mid.x} cy={mid.y} rx={14} ry={38} fill="none" stroke="#ff67d8"
+                        <Ellipse cx={mid.x} cy={mid.y} rx={14} ry={38} fill="none" stroke={PORTAL_SKIN.main}
                           strokeWidth={6.4} opacity={0.96} />
-                        <Ellipse cx={mid.x} cy={mid.y} rx={8} ry={27} fill="none" stroke="#b777ff"
+                        <Ellipse cx={mid.x} cy={mid.y} rx={8} ry={27} fill="none" stroke={PORTAL_SKIN.inner}
                           strokeWidth={2.2} opacity={0.72} />
-                        <Path d={swirlA} stroke="#7f43ff" strokeWidth={2.4}
+                        <Path d={swirlA} stroke={PORTAL_SKIN.swirlA} strokeWidth={2.4}
                           strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.78} />
-                        <Path d={swirlB} stroke="#ff9bde" strokeWidth={1.9}
+                        <Path d={swirlB} stroke={PORTAL_SKIN.swirlB} strokeWidth={1.9}
                           strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.7} />
-                        <Path d={flamePathA} stroke="#b53cff" strokeWidth={4.8}
+                        <Path d={flamePathA} stroke={PORTAL_SKIN.flameA} strokeWidth={4.8}
                           strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.84} />
-                        <Path d={flamePathB} stroke="#ff9b3d" strokeWidth={2.7}
+                        <Path d={flamePathB} stroke={PORTAL_SKIN.flameB} strokeWidth={2.7}
                           strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
-                        <Ellipse cx={mid.x} cy={mid.y} rx={4.5} ry={17} fill="rgba(136,42,255,0.32)"
-                          stroke="#ffd0f4" strokeWidth={1.4} opacity={0.88} />
-                        <Circle cx={mid.x - 13} cy={mid.y - 34} r={2.3} fill="#ffd0f4" opacity={0.8} />
-                        <Circle cx={mid.x + 14} cy={mid.y + 35} r={1.9} fill="#ff9b3d" opacity={0.72} />
+                        <Ellipse cx={mid.x} cy={mid.y} rx={4.5} ry={17} fill={PORTAL_SKIN.core}
+                          stroke={PORTAL_SKIN.coreStroke} strokeWidth={1.4} opacity={0.88} />
+                        <Circle cx={mid.x - 13} cy={mid.y - 34} r={2.3} fill={PORTAL_SKIN.dotA} opacity={0.8} />
+                        <Circle cx={mid.x + 14} cy={mid.y + 35} r={1.9} fill={PORTAL_SKIN.dotB} opacity={0.72} />
                       </G>
-                      <Circle cx={mid.x} cy={mid.y} r={4.5} fill="#fff1ff" opacity={0.72} />
+                      <Circle cx={mid.x} cy={mid.y} r={4.5} fill={PORTAL_SKIN.center} opacity={0.72} />
                     </G>
                   );
                 }
@@ -2170,7 +2870,62 @@ function LineRider() {
                         strokeWidth={TRACK_WIDTH + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
                       <Path d={pointsToPath(pts)} stroke={cfg.color}
                         strokeWidth={TRACK_WIDTH} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      {HALLOWEEN_ACTIVE && pts.length >= 2 && (() => {
+                        // Pumpkin skin: ribbed rind plus a jack-o-lantern face and stem at the middle.
+                        const m = pts[Math.floor(pts.length / 2)];
+                        return (
+                          <G>
+                            <Path d={pointsToPath(pts)} stroke="#a8400c" strokeWidth={TRACK_WIDTH}
+                              strokeDasharray="2 9" fill="none" />
+                            <Circle cx={m.x} cy={m.y + 1} r={9} fill="#ff8a1e" stroke="#a8400c" strokeWidth={1.4} />
+                            <Path d={`M${m.x},${m.y - 8} q1,-5 5,-6`} stroke="#3f7a2a" strokeWidth={2.4} strokeLinecap="round" fill="none" />
+                            <Polygon points={`${m.x - 5},${m.y - 2} ${m.x - 2},${m.y - 2} ${m.x - 3.5},${m.y + 1}`} fill="#ffe14a" />
+                            <Polygon points={`${m.x + 2},${m.y - 2} ${m.x + 5},${m.y - 2} ${m.x + 3.5},${m.y + 1}`} fill="#ffe14a" />
+                            <Path d={`M${m.x - 5},${m.y + 4} l2,2 l1.5,-1.5 l1.5,1.5 l1.5,-1.5 l1.5,1.5 l2,-2 l-1,3 h-8 z`} fill="#ffe14a" />
+                          </G>
+                        );
+                      })()}
                     </React.Fragment>
+                  );
+                }
+                if (cfg.skin === 'slime') {
+                  const drips = pts.filter((_, k) => k % 3 === 1);
+                  return (
+                    <React.Fragment key={idx}>
+                      {isSelected && (
+                        <Path d={pointsToPath(pts)} stroke="#ffffff" strokeWidth={TRACK_WIDTH + 12} strokeLinecap="round"
+                          strokeLinejoin="round" fill="none" strokeDasharray="5 5" opacity={0.38} />
+                      )}
+                      <Path d={pointsToPath(pts)} stroke={cfg.glow} strokeWidth={TRACK_WIDTH + 9} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      <Path d={pointsToPath(pts)} stroke="#2f9a1e" strokeWidth={TRACK_WIDTH + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      {drips.map((d, k) => (
+                        <G key={k}>
+                          <Path d={`M${d.x - 3},${d.y + 2} Q${d.x},${d.y + 10 + (k % 3) * 4} ${d.x + 3},${d.y + 2} Z`} fill="#5fe63c" />
+                          <Circle cx={d.x} cy={d.y + 9 + (k % 3) * 4} r={2.4} fill="#7dff5a" />
+                        </G>
+                      ))}
+                      <Path d={pointsToPath(pts)} stroke={cfg.color} strokeWidth={TRACK_WIDTH} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      <Path d={pointsToPath(pts)} stroke="#e6ffd8" strokeOpacity={0.6} strokeWidth={1.2} strokeDasharray="10 14" fill="none" />
+                    </React.Fragment>
+                  );
+                }
+                if (cfg.skin === 'cobweb') {
+                  const a = pts[0];
+                  const b = pts[pts.length - 1];
+                  const knots = pts.filter((_, k) => k % 2 === 0);
+                  return (
+                    <G key={idx} opacity={0.85}>
+                      {isSelected && (
+                        <Path d={pointsToPath(pts)} stroke="#ffffff" strokeWidth={10} strokeLinecap="round"
+                          strokeLinejoin="round" fill="none" strokeDasharray="5 5" opacity={0.38} />
+                      )}
+                      <Path d={pointsToPath(pts)} stroke={cfg.color} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                      {a && b && knots.map((k2, k) => (
+                        <Path key={k} d={`M${a.x},${a.y} Q${(a.x + k2.x) / 2},${(a.y + k2.y) / 2 + 6} ${k2.x},${k2.y} M${k2.x},${k2.y} Q${(b.x + k2.x) / 2},${(b.y + k2.y) / 2 + 6} ${b.x},${b.y}`}
+                          stroke={cfg.color} strokeWidth={0.7} fill="none" opacity={0.55} />
+                      ))}
+                      {knots.map((k2, k) => <Circle key={`k${k}`} cx={k2.x} cy={k2.y} r={1.3} fill="#f4f0ff" />)}
+                    </G>
                   );
                 }
                 return (
@@ -2196,8 +2951,12 @@ function LineRider() {
 
               {/* Trail */}
               {trail.length > 1 && (
-                <Path d={pointsToPath(trail)} stroke="rgba(255,100,50,0.4)"
-                  strokeWidth={2} fill="none" strokeLinecap="round" />
+                <G>
+                  <Path d={pointsToPath(trail)} stroke={currentRiderCfg?.trailColor || currentRiderCfg?.color || '#66d7ff'} strokeOpacity={0.28}
+                    strokeWidth={RIDER_VISUAL_RADIUS * 1.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  <Path d={pointsToPath(trail.slice(-12))} stroke="#ffffff" strokeOpacity={0.55}
+                    strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </G>
               )}
 
               {/* Start flag */}
@@ -2212,8 +2971,14 @@ function LineRider() {
 
               {/* Rider */}
               {rider && !rider.crashed && (
-                <G translateX={rider.x} translateY={rider.y} rotation={rAngle}>
-                  {renderCharacterSprite(rider.riderTypeId || activeRiderId, currentRiderCfg, riderMotion)}
+                <G translateX={rider.x} translateY={rider.y}>
+                  <Circle r={RIDER_VISUAL_RADIUS * 2.1} fill={currentRiderCfg?.color || '#66d7ff'} opacity={0.12} />
+                  <Circle r={RIDER_VISUAL_RADIUS * 1.35} fill={currentRiderCfg?.color || '#66d7ff'} opacity={0.22} />
+                  <G rotation={rAngle}>
+                    <G translateY={-RIDER_SPRITE_LIFT} scale={RIDER_SPRITE_SCALE}>
+                    {renderCharacterSprite(rider.riderTypeId || activeRiderId, currentRiderCfg, riderMotion)}
+                    </G>
+                  </G>
                 </G>
               )}
 
@@ -2356,6 +3121,18 @@ function LineRider() {
               </Text>
               <Text style={s.hudText}>{zoomPct}%</Text>
             </View>
+          )}
+
+          {!CHARACTER_SHOP_ENABLED && FREE_RIDER_CYCLE.length > 1 && !playing && (
+            <TouchableOpacity
+              style={[s.charactersFab, s.seasonalRiderFab]}
+              onPress={() => {
+                const i = FREE_RIDER_CYCLE.indexOf(activeRiderId);
+                setActiveRiderId(FREE_RIDER_CYCLE[(i + 1) % FREE_RIDER_CYCLE.length]);
+              }}
+            >
+              <Text style={s.charactersFabText}>{activeRiderCfg.icon} {activeRiderCfg.name}</Text>
+            </TouchableOpacity>
           )}
 
           {CHARACTER_SHOP_ENABLED && !playing && (
@@ -2710,6 +3487,7 @@ const s = StyleSheet.create({
   hud: { position: 'absolute', bottom: 10, left: 10, flexDirection: 'row', gap: 12 },
   hudText: { fontSize: 11, color: 'rgba(255,255,255,0.4)',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  seasonalRiderFab: { backgroundColor: 'rgba(60,20,90,0.92)', borderColor: '#ff8a1e' },
   charactersFab: { position: 'absolute', bottom: Platform.OS === 'ios' ? 34 : 18, left: 16, zIndex: 10,
     borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
     backgroundColor: 'rgba(16,28,58,0.94)', borderWidth: 1, borderColor: 'rgba(124,226,255,0.45)' },
