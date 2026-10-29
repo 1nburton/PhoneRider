@@ -849,6 +849,186 @@ function riderIdFromProductId(productId) {
   return hit ? hit.id : null;
 }
 
+/* ══════════ TRAILS ══════════ */
+const TRAIL_STORAGE_KEY = 'phone-rider-trails-v1';
+const TRAIL_TYPES = [
+  { id: 'classic', name: 'Classic Line', icon: '〰️', color: '#66d7ff', priceUsd: 0 },
+  { id: 'rainbow', name: 'Neon Rainbow', icon: '🌈', color: '#ff4fd8', priceUsd: 0 },
+  { id: 'sparkles', name: 'Sparkles', icon: '✨', color: '#fff3a6', priceUsd: 0 },
+  { id: 'fire', name: 'Fire', icon: '🔥', color: '#ff7a1e', priceUsd: 0.99 },
+  { id: 'ghost', name: 'Ghost Wisps', icon: '👻', color: '#d8f4ff', priceUsd: 0.99, seasonal: 'halloween' },
+  { id: 'bats', name: 'Bats', icon: '🦇', color: '#b26bff', priceUsd: 0.99, seasonal: 'halloween' },
+  { id: 'bubbles', name: 'Bubbles', icon: '🫧', color: '#7fe9ff', priceUsd: 0.99 },
+  { id: 'lightning', name: 'Lightning', icon: '⚡', color: '#ffe94a', priceUsd: 0.99 },
+  { id: 'pixel', name: 'Pixel Retro', icon: '👾', color: '#3bff8a', priceUsd: 0.99 },
+  { id: 'comet', name: 'Stardust Comet', icon: '☄️', color: '#9fb4ff', priceUsd: 0.99 },
+].map((t) => ({ ...t, productId: t.priceUsd > 0 ? `trail_${t.id}_1usd` : null }));
+const HALLOWEEN_TRAIL_IDS = TRAIL_TYPES.filter((t) => t.seasonal === 'halloween').map((t) => t.id);
+const DEFAULT_OWNED_TRAILS = ['classic', 'rainbow', 'sparkles', ...(HALLOWEEN_ACTIVE ? HALLOWEEN_TRAIL_IDS : [])];
+const TRAIL_MAX_PARTICLES = 28;
+function trailIdFromProductId(productId) {
+  const t = TRAIL_TYPES.find((x) => x.productId && x.productId === productId);
+  return t ? t.id : null;
+}
+function trailHash(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+// Draws a trail from the recent rider points. Particles are derived from the points
+// (no extra state), so cost is bounded by TRAIL_MAX_POINTS / TRAIL_MAX_PARTICLES.
+function renderTrail(trailId, pts, riderColor, t, scale = 1) {
+  if (!pts || pts.length < 2) return null;
+  const n = pts.length;
+  const W = RIDER_VISUAL_RADIUS * 1.4 * scale;
+  const seed = (i) => Math.floor((pts[i].x + pts[i].y) / 7) ;
+  const step = Math.max(1, Math.ceil(n / TRAIL_MAX_PARTICLES));
+  const idx = [];
+  for (let i = n - 1; i >= 0; i -= step) idx.push(i);
+  const age = (i) => 1 - i / (n - 1); // 0 = newest
+  switch (trailId) {
+    case 'rainbow': {
+      const cols = ['#ff3b6b', '#ffb02e', '#ffe94a', '#3bff8a', '#3bd8ff', '#b26bff'];
+      return (
+        <G>
+          {cols.map((c, k) => (
+            <Path key={k} d={pointsToPath(pts.map((p) => ({ x: p.x, y: p.y + (k - 2.5) * W * 0.16 })))}
+              stroke={c} strokeOpacity={0.7} strokeWidth={W * 0.17} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          ))}
+        </G>
+      );
+    }
+    case 'sparkles':
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#fff3a6" strokeOpacity={0.14} strokeWidth={W} fill="none" strokeLinecap="round" />
+          {idx.map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const tw = 0.5 + 0.5 * Math.sin(t * 9 + h * 20);
+            const r = (1.2 + h * 2.2) * scale * (1 - a * 0.6) * (0.6 + tw * 0.6);
+            const x = pts[i].x + (h - 0.5) * W * 1.4; const y = pts[i].y + (trailHash(h * 9) - 0.5) * W * 1.4;
+            return (
+              <G key={i} opacity={(1 - a) * (0.5 + tw * 0.5)}>
+                <Line x1={x - r * 2} y1={y} x2={x + r * 2} y2={y} stroke="#fff8d0" strokeWidth={0.8 * scale} />
+                <Line x1={x} y1={y - r * 2} x2={x} y2={y + r * 2} stroke="#fff8d0" strokeWidth={0.8 * scale} />
+                <Circle cx={x} cy={y} r={r * 0.6} fill="#ffffff" />
+              </G>
+            );
+          })}
+        </G>
+      );
+    case 'fire':
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#ff3b1e" strokeOpacity={0.25} strokeWidth={W * 1.1} fill="none" strokeLinecap="round" />
+          {idx.map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const fl = Math.sin(t * 14 + h * 30);
+            const r = W * (0.55 - a * 0.42) * (0.85 + fl * 0.15);
+            const y = pts[i].y - a * 10 * scale - fl * 1.5 * scale;
+            const c = a < 0.25 ? '#ffe94a' : (a < 0.6 ? '#ff8a1e' : '#ff3b1e');
+            return <Circle key={i} cx={pts[i].x + (h - 0.5) * 3 * scale} cy={y} r={Math.max(0.5, r)} fill={c} opacity={0.85 - a * 0.7} />;
+          })}
+        </G>
+      );
+    case 'ghost':
+      return (
+        <G>
+          {[0, 1, 2].map((k) => (
+            <Path key={k} d={pointsToPath(pts.map((p, i) => ({ x: p.x, y: p.y + Math.sin(i * 0.6 + t * 4 + k * 2.1) * W * 0.5 * age(i) })))}
+              stroke="#d8f4ff" strokeOpacity={0.22 - k * 0.05} strokeWidth={W * (0.7 - k * 0.18)} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          ))}
+          {idx.filter((_, k) => k % 4 === 2).map((i) => {
+            const a = age(i);
+            return (
+              <G key={i} opacity={0.55 * (1 - a)} translateX={pts[i].x} translateY={pts[i].y - a * 12 * scale}>
+                <Ellipse cx={0} cy={0} rx={3 * scale} ry={3.6 * scale} fill="#eef8ff" />
+                <Circle cx={-1 * scale} cy={-0.6 * scale} r={0.55 * scale} fill="#1a1f33" />
+                <Circle cx={1 * scale} cy={-0.6 * scale} r={0.55 * scale} fill="#1a1f33" />
+              </G>
+            );
+          })}
+        </G>
+      );
+    case 'bats':
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#b26bff" strokeOpacity={0.18} strokeWidth={W * 0.8} fill="none" strokeLinecap="round" />
+          {idx.filter((_, k) => k % 2 === 1).map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const flap = Math.sin(t * 18 + h * 40) * 2.2;
+            const sc = scale * (2.6 - a * 1.3);
+            const x = pts[i].x + (h - 0.5) * 8 * scale; const y = pts[i].y - a * 16 * scale - h * 6 * scale;
+            return (
+              <G key={i} opacity={1 - a * 0.8} translateX={x} translateY={y} scale={sc}>
+                <Path d={`M0 0 Q-3 ${-2 - flap} -6 ${-flap} Q-4.5 1 -3 0.6 Q-1.5 1.6 0 0.6 Q1.5 1.6 3 0.6 Q4.5 1 6 ${-flap} Q3 ${-2 - flap} 0 0 Z`} fill="#2a1240" stroke="#c98bff" strokeWidth={0.4} />
+              </G>
+            );
+          })}
+        </G>
+      );
+    case 'bubbles':
+      return (
+        <G>
+          {idx.filter((_, k) => k % 2 === 0).map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const r = (2.6 + h * 3.4) * scale * (0.6 + a);
+            const x = pts[i].x + Math.sin(t * 3 + h * 9) * 2 * scale; const y = pts[i].y - a * 14 * scale;
+            return (
+              <G key={i} opacity={1 - a * 0.7}>
+                <Circle cx={x} cy={y} r={r} fill="rgba(127,233,255,0.12)" stroke="#9ff0ff" strokeWidth={0.6 * scale} />
+                <Circle cx={x - r * 0.35} cy={y - r * 0.35} r={r * 0.22} fill="#ffffff" opacity={0.8} />
+              </G>
+            );
+          })}
+        </G>
+      );
+    case 'lightning': {
+      const frame = Math.floor(t * 12);
+      const zig = pts.map((p, i) => ({ x: p.x + (trailHash(frame * 31 + i) - 0.5) * W * 0.9 * age(i),
+        y: p.y + (trailHash(frame * 17 + i * 3) - 0.5) * W * 1.3 * age(i) }));
+      const d = pointsToPath(zig);
+      return (
+        <G>
+          <Path d={d} stroke="#ffe94a" strokeOpacity={0.3} strokeWidth={W * 0.7} fill="none" strokeLinejoin="miter" />
+          <Path d={'M' + zig.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' L')} stroke="#fffbe0" strokeWidth={1.4 * scale} fill="none" strokeLinejoin="miter" />
+        </G>
+      );
+    }
+    case 'pixel':
+      return (
+        <G>
+          {idx.map((i) => {
+            const a = age(i); const sz = Math.max(1.5, W * 0.55 * (1 - a * 0.6));
+            const g = 3 * scale;
+            const x = Math.round(pts[i].x / g) * g; const y = Math.round(pts[i].y / g) * g;
+            const c = ['#3bff8a', '#3bd8ff', '#ff4fd8'][i % 3];
+            return <Rect key={i} x={x - sz / 2} y={y - sz / 2} width={sz} height={sz} fill={c} opacity={1 - a * 0.75} />;
+          })}
+        </G>
+      );
+    case 'comet':
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#6a7dff" strokeOpacity={0.2} strokeWidth={W * 1.3} fill="none" strokeLinecap="round" />
+          <Path d={pointsToPath(pts.slice(-Math.ceil(n / 2)))} stroke="#cfe0ff" strokeOpacity={0.55} strokeWidth={W * 0.6} fill="none" strokeLinecap="round" />
+          {idx.map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const tw = 0.5 + 0.5 * Math.sin(t * 7 + h * 25);
+            return <Circle key={i} cx={pts[i].x + (h - 0.5) * W * 2 * a} cy={pts[i].y + (trailHash(h * 5) - 0.5) * W * 2 * a}
+              r={(0.5 + h) * scale} fill={h > 0.5 ? '#ffffff' : '#bfa8ff'} opacity={(1 - a) * tw} />;
+          })}
+        </G>
+      );
+    case 'classic':
+    default:
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke={riderColor || '#66d7ff'} strokeOpacity={0.28}
+            strokeWidth={W} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <Path d={pointsToPath(pts.slice(-12))} stroke="#ffffff" strokeOpacity={0.55}
+            strokeWidth={3 * scale} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </G>
+      );
+  }
+}
+
 function getStartAnchor(lines) {
   if (!lines.length) return null;
   const startLine = lines.find((line) => {
@@ -1658,6 +1838,9 @@ function LineRider() {
   const [storeReady, setStoreReady] = useState(false);
   const [storePrices, setStorePrices] = useState({});
   const [showCharacterShop, setShowCharacterShop] = useState(false);
+  const [charTab, setCharTab] = useState('riders');
+  const [activeTrailId, setActiveTrailId] = useState('classic');
+  const [ownedTrails, setOwnedTrails] = useState(DEFAULT_OWNED_TRAILS);
   const [showSaveSlots, setShowSaveSlots] = useState(false);
   const [showDemoTracks, setShowDemoTracks] = useState(false);
   const [savedTrackSlots, setSavedTrackSlots] = useState(Array.from({ length: TRACK_SAVE_SLOT_COUNT }, () => null));
@@ -1675,6 +1858,7 @@ function LineRider() {
 
   const riderRef = useRef(null);
   const ridersLoadedRef = useRef(false);
+  const trailsLoadedRef = useRef(false);
   const userZoomRef = useRef(1);
   const camDropRef = useRef(0);
   const camScanRef = useRef(0);
@@ -1766,9 +1950,26 @@ function LineRider() {
       if (mounted) ridersLoadedRef.current = true;
     };
 
+    const loadTrails = async () => {
+      try {
+        const raw = await getTrackStorage().getItem(TRAIL_STORAGE_KEY);
+        if (mounted && raw) {
+          const parsed = JSON.parse(raw);
+          const purchased = (Array.isArray(parsed?.purchased) ? parsed.purchased : [])
+            .filter((id) => TRAIL_TYPES.some((t) => t.id === id));
+          if (purchased.length) setOwnedTrails((prev) => Array.from(new Set([...prev, ...purchased])));
+          if (parsed?.active && [...DEFAULT_OWNED_TRAILS, ...purchased].includes(parsed.active)) setActiveTrailId(parsed.active);
+        }
+      } catch (_) {
+        // Ignore corrupted trail data.
+      }
+      if (mounted) trailsLoadedRef.current = true;
+    };
+
     loadSavedTrackSlots();
     loadAdPlayCount();
     loadRiders();
+    loadTrails();
     return () => { mounted = false; };
   }, []);
 
@@ -2239,12 +2440,14 @@ function LineRider() {
       const unlocked = purchases
         .map((p) => riderIdFromProductId(p?.productId || p?.id))
         .filter(Boolean);
+      const trails = purchases.map((p) => trailIdFromProductId(p?.productId || p?.id)).filter(Boolean);
+      if (trails.length) setOwnedTrails((prev) => Array.from(new Set([...prev, ...trails])));
       if (!unlocked.length) return;
       setOwnedRiders((prev) => Array.from(new Set([...prev, ...unlocked])));
     };
 
     const initIap = async () => {
-      const paidSkus = RIDER_TYPES.map((r) => r.productId).filter(Boolean);
+      const paidSkus = [...RIDER_TYPES, ...TRAIL_TYPES].map((r) => r.productId).filter(Boolean);
       try {
         RNIap = getRiderStoreApi();
         if (!RNIap) throw new Error('In-app purchase module is unavailable.');
@@ -2279,6 +2482,12 @@ function LineRider() {
       purchaseSub = RNIap.purchaseUpdatedListener(async (purchase) => {
         const productId = purchase?.productId || purchase?.id;
         const riderId = riderIdFromProductId(productId);
+        const boughtTrail = trailIdFromProductId(productId);
+        if (boughtTrail) {
+          setOwnedTrails((prev) => Array.from(new Set([...prev, boughtTrail])));
+          setActiveTrailId(boughtTrail);
+          setPurchaseBusyId(null);
+        }
         if (riderId) {
           setOwnedRiders((prev) => Array.from(new Set([...prev, riderId])));
           setActiveRiderId(riderId);
@@ -2326,12 +2535,14 @@ function LineRider() {
       const unlocked = purchases
         .map((p) => riderIdFromProductId(p?.productId || p?.id))
         .filter(Boolean);
-      if (!unlocked.length) {
-        Alert.alert('Restore Purchases', 'No prior rider purchases were found.');
+      const trails = purchases.map((p) => trailIdFromProductId(p?.productId || p?.id)).filter(Boolean);
+      if (!unlocked.length && !trails.length) {
+        Alert.alert('Restore Purchases', 'No prior purchases were found.');
         return;
       }
       setOwnedRiders((prev) => Array.from(new Set([...prev, ...unlocked])));
-      Alert.alert('Restore Purchases', `Restored ${unlocked.length} rider purchase(s).`);
+      setOwnedTrails((prev) => Array.from(new Set([...prev, ...trails])));
+      Alert.alert('Restore Purchases', `Restored ${unlocked.length + trails.length} purchase(s).`);
     } catch (err) {
       Alert.alert('Restore failed', err?.message || 'Unable to restore purchases right now.');
     }
@@ -2344,6 +2555,53 @@ function LineRider() {
     const purchased = ownedRiders.filter((id) => !DEFAULT_OWNED_RIDERS.includes(id));
     getTrackStorage().setItem(RIDER_STORAGE_KEY, JSON.stringify({ purchased, active: activeRiderId })).catch(() => {});
   }, [ownedRiders, activeRiderId]);
+
+  useEffect(() => {
+    if (!trailsLoadedRef.current) return;
+    // Event-granted (Halloween) trails are not stored, so they relock after the event unless bought.
+    const purchased = ownedTrails.filter((id) => !DEFAULT_OWNED_TRAILS.includes(id));
+    getTrackStorage().setItem(TRAIL_STORAGE_KEY, JSON.stringify({ purchased, active: activeTrailId })).catch(() => {});
+  }, [ownedTrails, activeTrailId]);
+
+  useEffect(() => {
+    // If the active trail relocks (event ended), fall back to Classic.
+    if (!ownedTrails.includes(activeTrailId) && trailsLoadedRef.current) setActiveTrailId('classic');
+  }, [ownedTrails, activeTrailId]);
+
+  const activateOrPurchaseTrail = useCallback(async (trailId) => {
+    const cfg = TRAIL_TYPES.find((t) => t.id === trailId) || TRAIL_TYPES[0];
+    if (ownedTrails.includes(trailId) || cfg.priceUsd <= 0) {
+      if (!ownedTrails.includes(trailId)) setOwnedTrails((prev) => [...prev, trailId]);
+      setActiveTrailId(trailId);
+      return;
+    }
+    if (purchaseBusyId) return;
+    if (Platform.OS === 'web') {
+      Alert.alert('Unlock in the app', `${cfg.name} can be unlocked in the iOS app.`);
+      return;
+    }
+    if (!storeReady || !cfg.productId) {
+      Alert.alert('Store unavailable', 'In-app purchases are not ready yet. Try again in a moment.');
+      return;
+    }
+    setPurchaseBusyId(trailId);
+    try {
+      const RNIap = getRiderStoreApi();
+      if (!RNIap) throw new Error('In-app purchase module is unavailable.');
+      await RNIap.requestPurchase({
+        request: {
+          ios: { sku: cfg.productId },
+          apple: { sku: cfg.productId },
+          android: { skus: [cfg.productId] },
+          google: { skus: [cfg.productId] },
+        },
+        type: 'in-app',
+      });
+    } catch (err) {
+      Alert.alert('Purchase failed', err?.message || 'Could not complete purchase.');
+      setPurchaseBusyId(null);
+    }
+  }, [ownedTrails, purchaseBusyId, storeReady]);
 
   const activateOrPurchaseRider = useCallback(async (riderId) => {
     const cfg = riderConfig(riderId);
@@ -3267,12 +3525,7 @@ function LineRider() {
 
               {/* Trail */}
               {trail.length > 1 && (
-                <G>
-                  <Path d={pointsToPath(trail)} stroke={currentRiderCfg?.trailColor || currentRiderCfg?.color || '#66d7ff'} strokeOpacity={0.28}
-                    strokeWidth={RIDER_VISUAL_RADIUS * 1.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                  <Path d={pointsToPath(trail.slice(-12))} stroke="#ffffff" strokeOpacity={0.55}
-                    strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                </G>
+                renderTrail(activeTrailId, trail, currentRiderCfg?.trailColor || currentRiderCfg?.color, Date.now() / 1000)
               )}
 
               {/* Start flag */}
@@ -3631,9 +3884,11 @@ function LineRider() {
             <View style={s.charSheet}>
               <View style={s.charHeader}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.charTitle}>CHARACTERS</Text>
+                  <Text style={s.charTitle}>{charTab === 'trails' ? 'TRAILS' : 'CHARACTERS'}</Text>
                   <Text style={s.charSubtitle}>
-                    {ownedRiders.length}/{RIDER_TYPES.length} unlocked · tap to ride
+                    {charTab === 'trails'
+                      ? `${ownedTrails.length}/${TRAIL_TYPES.length} unlocked · works with any rider`
+                      : `${ownedRiders.length}/${RIDER_TYPES.length} unlocked · tap to ride`}
                   </Text>
                 </View>
                 <TouchableOpacity onPress={() => setShowCharacterShop(false)} style={s.charCloseBtn}
@@ -3642,6 +3897,56 @@ function LineRider() {
                 </TouchableOpacity>
               </View>
 
+              <View style={s.charTabs}>
+                {[['riders', '🏂 Riders'], ['trails', '✨ Trails']].map(([id, label]) => (
+                  <TouchableOpacity key={id} onPress={() => setCharTab(id)}
+                    style={[s.charTab, charTab === id && s.charTabActive]} accessibilityLabel={`${label} tab`}>
+                    <Text style={[s.charTabText, charTab === id && s.charTabTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {charTab === 'trails' ? (
+              <ScrollView contentContainerStyle={s.charGrid}>
+                {TRAIL_TYPES.map((tt) => {
+                  const owned = ownedTrails.includes(tt.id);
+                  const active = activeTrailId === tt.id;
+                  const busy = purchaseBusyId === tt.id;
+                  const price = storePrices[tt.productId] || RIDER_FALLBACK_PRICE_LABEL;
+                  const demo = Array.from({ length: 22 }, (_, i) => ({ x: -21 + i * 1.9, y: 2 + Math.sin(i * 0.38) * 5 }));
+                  return (
+                    <TouchableOpacity
+                      key={tt.id}
+                      style={[s.charCard, { borderColor: active ? tt.color : 'rgba(124,226,255,0.18)' },
+                        active && { shadowColor: tt.color, backgroundColor: 'rgba(20,34,70,0.98)' }]}
+                      onPress={() => activateOrPurchaseTrail(tt.id)}
+                      disabled={busy}
+                      accessibilityLabel={owned ? `Select ${tt.name} trail` : `Unlock ${tt.name} trail for ${price}`}
+                    >
+                      <View style={s.charArt}>
+                        <Svg width="100%" height="100%" viewBox="-24 -16 48 32">
+                          <G opacity={owned ? 1 : 0.45}>
+                            {renderTrail(tt.id, demo, currentRiderCfg?.trailColor || '#66d7ff', 1.3, 0.35)}
+                          </G>
+                        </Svg>
+                        {!owned && (
+                          <View style={s.charLockBadge}><Text style={s.charLockIcon}>🔒</Text></View>
+                        )}
+                        {tt.seasonal === 'halloween' && (
+                          <View style={s.charEventBadge}><Text style={s.charEventText}>🎃</Text></View>
+                        )}
+                      </View>
+                      <Text style={[s.charName, active && { color: tt.color }]} numberOfLines={1}>{tt.icon} {tt.name}</Text>
+                      <View style={[s.charPill, active ? { backgroundColor: tt.color } : (owned ? s.charPillOwned : s.charPillLocked)]}>
+                        <Text style={[s.charPillText, active && { color: '#0a0a1a' }, !owned && { color: '#ffd23b' }]}>
+                          {active ? 'SELECTED' : (owned ? (tt.priceUsd > 0 && tt.seasonal && HALLOWEEN_ACTIVE ? 'FREE · EVENT' : 'USE') : (busy ? '…' : price))}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              ) : (
               <ScrollView contentContainerStyle={s.charGrid}>
                 {RIDER_TYPES.map((rt) => {
                   const owned = ownedRiders.includes(rt.id);
@@ -3691,6 +3996,7 @@ function LineRider() {
                   );
                 })}
               </ScrollView>
+              )}
 
               <View style={s.charFooter}>
                 <TouchableOpacity onPress={restoreRiderPurchases} style={s.charRestoreBtn}>
@@ -3862,6 +4168,12 @@ const s = StyleSheet.create({
   charSheet: { width: '100%', maxWidth: 520, maxHeight: '88%', borderRadius: 22, borderWidth: 1.5, borderColor: 'rgba(0,255,200,0.55)',
     backgroundColor: 'rgba(10,12,30,0.98)', paddingTop: 16, paddingHorizontal: 12, paddingBottom: 12,
     shadowColor: '#00ffc8', shadowOpacity: 0.45, shadowRadius: 22, shadowOffset: { width: 0, height: 0 }, elevation: 12 },
+  charTabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 6, marginBottom: 10 },
+  charTab: { flex: 1, paddingVertical: 8, borderRadius: 12, alignItems: 'center',
+    borderWidth: 1, borderColor: 'rgba(124,226,255,0.2)', backgroundColor: 'rgba(255,255,255,0.03)' },
+  charTabActive: { borderColor: '#00ffc8', backgroundColor: 'rgba(0,255,200,0.12)' },
+  charTabText: { color: 'rgba(255,255,255,0.55)', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  charTabTextActive: { color: '#00ffc8' },
   charHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, marginBottom: 10 },
   charTitle: { color: '#00ffc8', fontSize: 22, fontWeight: '900', letterSpacing: 3,
     textShadowColor: 'rgba(0,255,200,0.6)', textShadowRadius: 10, textShadowOffset: { width: 0, height: 0 } },
