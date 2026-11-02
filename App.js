@@ -16,8 +16,11 @@ import {
 } from 'react-native';
 import Svg, {
   Path, Circle, Ellipse, G, Line, Rect, Polygon,
-  Defs, LinearGradient, RadialGradient, Stop,
+  Defs, LinearGradient, RadialGradient, Stop, Text as SvgText,
 } from 'react-native-svg';
+import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
+import { captureRef } from 'react-native-view-shot';
 import {
   GestureDetector, Gesture,
   GestureHandlerRootView,
@@ -37,6 +40,63 @@ const RIDER_SPRITE_SCALE = 1.5; // sprite art was drawn for radius 6; feet sit ~
 const RIDER_SPRITE_LIFT = 8 * RIDER_SPRITE_SCALE - RIDER_RADIUS; // keep scaled feet on the line
 const SIM_HZ = 60; // physics always steps at 60Hz regardless of display refresh (60/120Hz ProMotion)
 const SIM_DT_MS = 1000 / SIM_HZ;
+
+// Stunt scoring: points for airtime, flips and loops, chained into combos.
+const STUNT_COMBO_WINDOW_MS = 2500;
+const STUNT_MIN_AIR_MS = 600;
+const STUNT_POPUP_MS = 1400;
+const unwrapAngle = (d) => {
+  let x = d;
+  while (x > Math.PI) x -= Math.PI * 2;
+  while (x < -Math.PI) x += Math.PI * 2;
+  return x;
+};
+const newStuntState = () => ({
+  score: 0, combo: 0, comboUntil: 0, best: 0,
+  prevAngle: null, loopAccum: 0, loopPeak: 0, airRot: 0, airFrames: 0,
+  popups: [], nextId: 1,
+});
+// Advances stunt state by one sim step. `t` is sim time in ms.
+function stepStunts(st, r, grounded, t) {
+  const heading = grounded ? r.angle : Math.atan2(r.vy, r.vx);
+  const awards = [];
+  if (st.prevAngle != null) {
+    const d = unwrapAngle(heading - st.prevAngle);
+    // Loop: continuous rotation one way; a reversal of >90deg from the peak resets it.
+    st.loopAccum += d;
+    if (Math.abs(st.loopAccum) > Math.abs(st.loopPeak)) st.loopPeak = st.loopAccum;
+    if (Math.abs(st.loopPeak) - Math.abs(st.loopAccum) > Math.PI / 2 || Math.sign(st.loopAccum) !== Math.sign(st.loopPeak)) {
+      st.loopAccum = d; st.loopPeak = d;
+    }
+    if (Math.abs(st.loopAccum) >= Math.PI * 1.8) {
+      awards.push({ label: 'LOOP', pts: 500, color: '#ff4fd8' });
+      st.loopAccum = 0; st.loopPeak = 0;
+    }
+    if (!grounded) st.airRot += d;
+  }
+  st.prevAngle = heading;
+  if (!grounded) {
+    st.airFrames += 1;
+  } else if (st.airFrames > 0) {
+    const airMs = st.airFrames * SIM_DT_MS;
+    const flips = Math.floor(Math.abs(st.airRot) / (Math.PI * 0.85));
+    if (flips > 0) awards.push({ label: flips > 1 ? `FLIP x${flips}` : 'FLIP', pts: 250 * flips, color: '#ffe14f' });
+    if (airMs >= STUNT_MIN_AIR_MS) {
+      awards.push({ label: airMs >= 1500 ? 'BIG AIR' : 'AIR', pts: Math.round(airMs / 10), color: '#4fe9ff' });
+    }
+    st.airFrames = 0; st.airRot = 0;
+  }
+  for (const a of awards) {
+    st.combo = t <= st.comboUntil ? st.combo + 1 : 1;
+    st.comboUntil = t + STUNT_COMBO_WINDOW_MS;
+    const gained = a.pts * st.combo;
+    st.score += gained;
+    st.best = Math.max(st.best, st.score);
+    st.popups.push({ id: st.nextId++, text: `${a.label} +${gained}${st.combo > 1 ? `  x${st.combo} COMBO` : ''}`, color: a.color, born: t });
+  }
+  if (st.popups.length) st.popups = st.popups.filter((pp) => t - pp.born < STUNT_POPUP_MS).slice(-4);
+  return awards.length;
+}
 const MAX_SIM_STEPS_PER_FRAME = 5; // avoid spiral-of-death after a hitch/backgrounding
 const PLAY_CAM_ZOOM = 1.35;
 const PLAY_CAM_LEAD = 14; // world units of look-ahead per unit of velocity
@@ -97,6 +157,45 @@ function isHalloweenSeason(date = new Date()) {
   return (m === 9 && d >= 15) || (m === 10 && d <= 2);
 }
 const HALLOWEEN_ACTIVE = HALLOWEEN_FORCE === null ? isHalloweenSeason() : !!HALLOWEEN_FORCE;
+// Thanksgiving (Nov 2 – Nov 30) and Christmas (Nov 2 – Jan 6) events; they overlap (both sets free, both decors
+// layered: Thanksgiving sky + Christmas lights/snow). Halloween decor wins on its last day. Same null/true/false override.
+const THANKSGIVING_FORCE = null;
+const CHRISTMAS_FORCE = null;
+function isThanksgivingSeason(date = new Date()) {
+  return date.getMonth() === 10 && date.getDate() >= 2;
+}
+function isChristmasSeason(date = new Date()) {
+  const m = date.getMonth();
+  const d = date.getDate();
+  return (m === 10 && d >= 2) || m === 11 || (m === 0 && d <= 6);
+}
+const THANKSGIVING_ACTIVE = THANKSGIVING_FORCE === null ? isThanksgivingSeason() : !!THANKSGIVING_FORCE;
+const CHRISTMAS_ACTIVE = CHRISTMAS_FORCE === null ? isChristmasSeason() : !!CHRISTMAS_FORCE;
+// New Year (Dec 31 – Jan 7), Valentine's (Feb 7 – 15) and St. Patrick's (Mar 10 – 18) events. Their items are
+// always $0.99 (not free during the event); the event only adds the badge and sky decor. Same null/true/false override.
+const NEWYEAR_FORCE = null;
+const VALENTINE_FORCE = null;
+const STPATRICK_FORCE = null;
+function isNewYearSeason(date = new Date()) {
+  const m = date.getMonth();
+  const d = date.getDate();
+  return (m === 11 && d === 31) || (m === 0 && d <= 7);
+}
+function isValentineSeason(date = new Date()) {
+  return date.getMonth() === 1 && date.getDate() >= 7 && date.getDate() <= 15;
+}
+function isStPatrickSeason(date = new Date()) {
+  return date.getMonth() === 2 && date.getDate() >= 10 && date.getDate() <= 18;
+}
+const NEWYEAR_ACTIVE = NEWYEAR_FORCE === null ? isNewYearSeason() : !!NEWYEAR_FORCE;
+const VALENTINE_ACTIVE = VALENTINE_FORCE === null ? isValentineSeason() : !!VALENTINE_FORCE;
+const STPATRICK_ACTIVE = STPATRICK_FORCE === null ? isStPatrickSeason() : !!STPATRICK_FORCE;
+const EVENT_ACTIVE = {
+  halloween: HALLOWEEN_ACTIVE, thanksgiving: THANKSGIVING_ACTIVE, christmas: CHRISTMAS_ACTIVE,
+  newyear: NEWYEAR_ACTIVE, valentine: VALENTINE_ACTIVE, stpatrick: STPATRICK_ACTIVE,
+};
+const EVENT_BADGE = { halloween: '🎃', thanksgiving: '🦃', christmas: '🎄', newyear: '🎆', valentine: '💘', stpatrick: '☘️' };
+const isEventActive = (season) => !!(season && EVENT_ACTIVE[season]);
 const BOOST_WEEEE_COOLDOWN_MS = 2800;
 const AIR_YIPPEE_DELAY_MS = 450;
 const AIR_YIPPEE_COOLDOWN_MS = 5200;
@@ -456,11 +555,62 @@ const RIDER_TYPES = [
     blurb: 'A caped vampire under bat-wing sails, riding a coffin board. Free during Halloween.',
     motion: { pace: 0.8, bob: 1.5, sway: 1.4, suspension: 0.2, airTilt: 1.2 },
   },
+  {
+    id: 'turkey', name: 'Turkey Racer', productId: 'rider_turkey_1usd', priceUsd: 0.99, seasonal: 'thanksgiving',
+    color: '#8a4b1c', accent: '#ffb02e', trailColor: '#ff8a1e', launchSpeed: 1.95, topSpeed: 24, icon: '🦃',
+    blurb: 'A goggled gobbler on a neon racing board, tail fanned for speed.',
+    motion: { pace: 1.1, bob: 1, sway: 0.8, suspension: 0.3, airTilt: 0.9 }, animated: true,
+  },
+  {
+    id: 'pilgrim', name: 'Pilgrim Sledder', productId: 'rider_pilgrim_1usd', priceUsd: 0.99, seasonal: 'thanksgiving',
+    color: '#26262e', accent: '#ffd23b', trailColor: '#ffb02e', launchSpeed: 1.9, topSpeed: 23.5, icon: '🎩',
+    blurb: 'Buckled hat, flapping cape and a hand-carved harvest sled.',
+    motion: { pace: 0.9, bob: 0.8, sway: 0.7, suspension: 0.2, airTilt: 0.8 }, animated: true,
+  },
+  {
+    id: 'santa', name: 'Santa Sleigh', productId: null, priceUsd: 0, seasonal: 'christmas',
+    color: '#d61f2c', accent: '#ffd23b', trailColor: '#ff5a5a', launchSpeed: 1.95, topSpeed: 24, icon: '🎅',
+    blurb: 'Gold-runner sleigh, a sack of gifts and a jolly wave. Free for everyone, all year.',
+    motion: { pace: 0.85, bob: 0.9, sway: 0.6, suspension: 0.2, airTilt: 1 }, animated: true,
+  },
+  {
+    id: 'elf', name: 'Elf Snowboarder', productId: 'rider_elf_1usd', priceUsd: 0.99, seasonal: 'christmas',
+    color: '#22c55e', accent: '#ef4444', trailColor: '#3bff8a', launchSpeed: 2.0, topSpeed: 24, icon: '🧝',
+    blurb: 'Pointy ears, jingling hat and a candy-stripe board.',
+    motion: { pace: 1.15, bob: 1.2, sway: 1, suspension: 0.3, airTilt: 1 }, animated: true,
+  },
+  {
+    id: 'reindeer', name: 'Reindeer', productId: 'rider_reindeer_1usd', priceUsd: 0.99, seasonal: 'christmas',
+    color: '#9a6236', accent: '#7fe9ff', trailColor: '#ff3b3b', launchSpeed: 1.95, topSpeed: 24.5, icon: '🦌',
+    blurb: 'Four hooves on twin skis and a nose that glows red.',
+    motion: { pace: 1.2, bob: 1, sway: 0.8, suspension: 0.4, airTilt: 1.1 }, animated: true,
+  },
+  {
+    id: 'snowman', name: 'Snowman', productId: 'rider_snowman_1usd', priceUsd: 0.99, seasonal: 'christmas',
+    color: '#ef4444', accent: '#7fd6ff', trailColor: '#bfe3ff', launchSpeed: 1.9, topSpeed: 23.5, icon: '⛄',
+    blurb: 'Top hat, carrot nose and waving twig arms on a frosty board.',
+    motion: { pace: 0.9, bob: 0.7, sway: 0.6, suspension: 0.2, airTilt: 0.8 }, animated: true,
+  },
+  {
+    id: 'cupid', name: 'Cupid', productId: 'rider_cupid_1usd', priceUsd: 0.99, seasonal: 'valentine',
+    color: '#ff4f8b', accent: '#ffd23b', trailColor: '#ff7fb0', launchSpeed: 2.0, topSpeed: 24, icon: '💘',
+    blurb: 'Fluttering wings, a golden bow and a heart-shaped board.',
+    motion: { pace: 1, bob: 1.3, sway: 0.8, suspension: 0.3, airTilt: 1.1 }, animated: true,
+  },
+  {
+    id: 'leprechaun', name: 'Leprechaun', productId: 'rider_leprechaun_1usd', priceUsd: 0.99, seasonal: 'stpatrick',
+    color: '#16a34a', accent: '#fbbf24', trailColor: '#3bff8a', launchSpeed: 1.95, topSpeed: 24, icon: '🍀',
+    blurb: 'Buckled green hat, ginger beard and a pot of gold on a shamrock board.',
+    motion: { pace: 1.1, bob: 1, sway: 0.8, suspension: 0.3, airTilt: 1 }, animated: true,
+  },
 ];
 
-const HALLOWEEN_RIDER_IDS = RIDER_TYPES.filter((r) => r.seasonal === 'halloween').map((r) => r.id);
+// Only Halloween items are free during their event; Thanksgiving/Christmas items are always $0.99 (Santa is free all year).
+const EVENT_FREE_SEASONS = { halloween: true };
+const isEventFree = (season) => !!(EVENT_FREE_SEASONS[season] && isEventActive(season));
+const EVENT_RIDER_IDS = RIDER_TYPES.filter((r) => isEventFree(r.seasonal)).map((r) => r.id);
 // During the event the Halloween riders are free (granted on launch), whether or not the shop is on.
-const DEFAULT_OWNED_RIDERS = ['classic', 'snowboarder', 'sled', ...(HALLOWEEN_ACTIVE ? HALLOWEEN_RIDER_IDS : [])];
+const DEFAULT_OWNED_RIDERS = ['classic', 'snowboarder', 'sled', 'santa', ...EVENT_RIDER_IDS];
 
 const LINE_TYPES = [
   { id: 'normal', label: 'Normal', color: '#7ce2ff', glow: 'rgba(124,226,255,0.2)', speedMult: 1,   speedDrag: 0,      collidable: true },
@@ -473,7 +623,7 @@ const LINE_TYPES = [
   { id: 'slime', label: 'Slime', color: '#7dff5a', glow: 'rgba(125,255,90,0.26)', speedMult: 0.96, speedDrag: -0.01, collidable: true, seasonal: 'halloween', skin: 'slime' },
   { id: 'cobweb', label: 'Cobweb', color: '#d9d4ea', glow: 'rgba(217,212,234,0.12)', speedMult: 1, speedDrag: 0, collidable: false, seasonal: 'halloween', skin: 'cobweb' },
 ];
-const DRAW_LINE_TYPES = LINE_TYPES.filter((lineTypeEntry) => !lineTypeEntry.special && (!lineTypeEntry.seasonal || HALLOWEEN_ACTIVE));
+const DRAW_LINE_TYPES = LINE_TYPES.filter((lineTypeEntry) => !lineTypeEntry.special && (!lineTypeEntry.seasonal || isEventActive(lineTypeEntry.seasonal)));
 // Portal colours; the Halloween skin swaps the pink/violet vortex for slime green and witch purple.
 const PORTAL_SKIN = HALLOWEEN_ACTIVE
   ? { ring: '#2a0b4a', main: '#7dff5a', inner: '#c58bff', swirlA: '#9b4dff', swirlB: '#c6ff9b', flameA: '#9b4dff', flameB: '#ff8a1e', core: 'rgba(125,255,90,0.3)', coreStroke: '#eaffd8', dotA: '#c6ff9b', dotB: '#ff8a1e', center: '#f4ffe8' }
@@ -556,6 +706,48 @@ const PIECE_DATA = [
     ['normal', [0,0,220,6]],
     ['portal', [170,-60,170,-4]],
   ] },
+  { id: 'haybale', label: 'Hay Bale Jump', category: 'jump', icon: '🌾', lines: [
+    ['boost', [0,0,140,6]],
+    ['normal', [140,6,210,6,221.7,5.7,232.8,4.8,243.3,3.3,253.2,1.2,262.5,-1.5,271.2,-4.8,279.3,-8.7,286.8,-13.2,293.7,-18.3,300,-24]],
+    ['scenery', [220,14,300,14,300,-22,220,-22,220,14]],
+    ['scenery', [220,-4,300,-4]],
+    ['scenery', [240,14,240,-22]],
+    ['scenery', [280,14,280,-22]],
+    ['normal', [610,-46,646.2,-42.8,682.3,-38.9,718.4,-34.1,754.4,-28.5,790.3,-22.1,826.1,-14.9,861.8,-6.8,897.5,2,933.1,11.7,968.6,22.1,1004,33.4,1039.4,45.5,1074.6,58.4,1109.8,72.1,1145,86.7,1180,102,1380,110]],
+  ] },
+  { id: 'cornucopia', label: 'Cornucopia Ramp', category: 'jump', icon: '🌽', lines: [
+    ['boost', [0,0,140,6]],
+    ['normal', [140,6,180,6,201.1,5.5,221.1,4.1,240,1.6,257.8,-1.8,274.4,-6.2,290,-11.5,304.4,-17.8,317.8,-25.1,330,-33.4,341.1,-42.6,351.1,-52.8,360,-64]],
+    ['scenery', [200,14,228.7,13.5,254.6,11.4,277.9,7.5,298.6,1.8,316.5,-5.5,331.8,-14.6,344.3,-25.3,354.2,-37.8,361.5,-52.1,366,-68,370.5,-55,372.1,-42.9,370.8,-31.7,366.5,-21.5,359.3,-12.2,349.1,-3.9,336,3.5,320,10]],
+    ['scenery', [236,4,234.1,9.9,229.1,13.5,222.9,13.5,217.9,9.9,216,4,217.9,-1.9,222.9,-5.5,229.1,-5.5,234.1,-1.9,236,4]],
+    ['scenery', [258,0,256.5,4.7,252.5,7.6,247.5,7.6,243.5,4.7,242,0,243.5,-4.7,247.5,-7.6,252.5,-7.6,256.5,-4.7,258,0]],
+    ['normal', [540,-34,560,-25.8,580,-17.9,600,-10.2,620,-2.9,640,4.2,660,11,680,17.5,700,23.8,720,29.8,740,35.4,760,40.9,780,46,1040,56]],
+  ] },
+  { id: 'giftstack', label: 'Gift Box Kicker', category: 'jump', icon: '🎁', lines: [
+    ['boost', [0,0,140,6]],
+    ['normal', [140,6,220,6,233.6,5.7,246.4,4.6,258.4,2.9,269.6,0.6,280,-2.5,289.6,-6.2,298.4,-10.7,306.4,-15.8,313.6,-21.5,320,-28]],
+    ['scenery', [230,14,275,14,275,-8,230,-8,230,14]],
+    ['scenery', [275,14,320,14,320,-28,275,-28,275,14]],
+    ['scenery', [280,-28,315,-28,315,-52,280,-52,280,-28]],
+    ['scenery', [252,14,252,-8]],
+    ['scenery', [297,14,297,-28]],
+    ['scenery', [297,-28,297,-52]],
+    ['scenery', [290,-58,297,-52,304,-58]],
+    ['normal', [470,-24,500,-24,535.1,-23.5,570.3,-22,605.7,-19.6,641.3,-16.1,677,-11.7,712.8,-6.3,748.8,0.1,785,7.5,821.3,15.9,857.8,25.2,894.5,35.6,931.3,46.9,968.2,59.2,1005.3,72.5,1042.6,86.7,1080,102,1280,110]],
+  ] },
+  { id: 'candyrail', label: 'Candy Cane Rail', category: 'jump', icon: '🍬', lines: [
+    ['boost', [0,0,140,6]],
+    ['boost', [140,6,660,28]],
+    ['scenery', [660,10,660.9,4.4,663.4,-0.6,667.4,-4.6,672.4,-7.1,678,-8,683.6,-7.1,688.6,-4.6,692.6,-0.6,695.1,4.4,696,10]],
+    ['scenery', [696,10,696,46]],
+    ['scenery', [200,12.5,200,66]],
+    ['scenery', [300,16.7,300,66]],
+    ['scenery', [400,20.9,400,66]],
+    ['scenery', [500,25.1,500,66]],
+    ['scenery', [600,29.3,600,66]],
+    ['scenery', [160,66,640,66]],
+    ['normal', [720,46,759.8,47.5,799.4,49.6,838.6,52.2,877.5,55.4,916.1,59.1,954.4,63.3,992.3,68.1,1030,73.5,1067.3,79.4,1104.4,85.8,1141.1,92.8,1177.5,100.4,1213.6,108.5,1249.4,117.1,1284.8,126.3,1320,136,1540,144]],
+  ] },
   { id: 'tree', label: 'Pine Tree', category: 'scenery', icon: '🌲', lines: [
     ['scenery', [0,0,0,-20]],
     ['scenery', [-24,-20,0,-80,24,-20,-24,-20]],
@@ -586,6 +778,23 @@ const PIECE_DATA = [
     ['scenery', [-18,0,-18,-30,-14.6,-40.6,-10.6,-44.6,-5.6,-47.1,0,-48,5.6,-47.1,10.6,-44.6,14.6,-40.6,17.1,-35.6,18,-30,-18,0]],
     ['scenery', [0,-44,0,-22]],
     ['scenery', [-8,-36,8,-36]],
+  ] },
+  { id: 'snowpine', label: 'Snowy Pine', category: 'scenery', icon: '🌲', lines: [
+    ['scenery', [0,0,0,-20]],
+    ['scenery', [-28,-20,0,-80,28,-20,-28,-20]],
+    ['scenery', [-20,-48,0,-100,20,-48]],
+    ['scenery', [-24,-24,-14,-30,-6,-24,4,-31,14,-24,24,-28]],
+    ['scenery', [-16,-52,-6,-58,4,-52,14,-57]],
+    ['scenery', [-6,-90,0,-100,6,-90]],
+  ] },
+  { id: 'gingerbread', label: 'Gingerbread House', category: 'scenery', icon: '🏠', lines: [
+    ['scenery', [-40,0,-40,-44,40,-44,40,0,-40,0]],
+    ['scenery', [-50,-40,0,-80,50,-40]],
+    ['scenery', [-44,-46,-34,-52,-24,-46,-14,-52,-4,-46,6,-52,16,-46,26,-52,36,-46]],
+    ['scenery', [-10,0,-10,-24,10,-24,10,0]],
+    ['scenery', [18,-30,32,-30,32,-16,18,-16,18,-30]],
+    ['scenery', [-32,-30,-18,-30,-18,-16,-32,-16,-32,-30]],
+    ['scenery', [22,-62,22,-82,32,-82,32,-54]],
   ] },
 ];
 const PIECE_LIBRARY = [
@@ -810,6 +1019,137 @@ const DEMO_TRACK_LIBRARY = [
   },
 ];
 
+// Daily challenge courses (generated from premade pieces, sim-verified to finish).
+const DAILY_COURSES = [
+  { id: 'kicker_skijump', name: 'Sky Hop', pieces: ['kicker','skijump'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'boost',points: [{x: 0,y: 0},{x: 140,y: 6}]},{type: 'normal',points: [{x: 140,y: 6},{x: 200,y: 6},{x: 212,y: 6},{x: 223,y: 5},{x: 233,y: 4},{x: 243,y: 2},{x: 253,y: 0},{x: 261,y: -3},{x: 269,y: -7},{x: 277,y: -11},{x: 284,y: -15},{x: 290,y: -20}]},{type: 'normal',points: [{x: 610,y: -46},{x: 646,y: -43},{x: 682,y: -39},{x: 718,y: -34},{x: 754,y: -28},{x: 790,y: -22},{x: 826,y: -15},{x: 862,y: -7},{x: 898,y: 2},{x: 933,y: 12},{x: 969,y: 22},{x: 1004,y: 33},{x: 1039,y: 46},{x: 1075,y: 58},{x: 1110,y: 72},{x: 1145,y: 87},{x: 1180,y: 102},{x: 1380,y: 110}]},{type: 'normal',points: [{x: 1380,y: 110},{x: 1400,y: 112},{x: 1420,y: 116},{x: 1440,y: 121},{x: 1460,y: 127},{x: 1480,y: 134},{x: 1500,y: 143},{x: 1520,y: 152},{x: 1540,y: 163},{x: 1560,y: 176},{x: 1580,y: 189},{x: 1600,y: 204},{x: 1620,y: 220},{x: 1635,y: 229},{x: 1651,y: 237},{x: 1668,y: 244},{x: 1685,y: 249},{x: 1703,y: 253},{x: 1721,y: 255},{x: 1740,y: 256},{x: 1760,y: 256},{x: 1800,y: 248}]},{type: 'normal',points: [{x: 1808,y: 270},{x: 1847,y: 284},{x: 1886,y: 298},{x: 1924,y: 314},{x: 1962,y: 331},{x: 2001,y: 350},{x: 2039,y: 369},{x: 2077,y: 390},{x: 2115,y: 412},{x: 2153,y: 435},{x: 2190,y: 460},{x: 2228,y: 486},{x: 2266,y: 512},{x: 2303,y: 541},{x: 2340,y: 570},{x: 2361,y: 584},{x: 2383,y: 597},{x: 2406,y: 608},{x: 2430,y: 618},{x: 2456,y: 626},{x: 2483,y: 632},{x: 2511,y: 637},{x: 2540,y: 640},{x: 2780,y: 646}]},{type: 'normal',points: [{x: 2780,y: 646},{x: 3280,y: 686}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 3100,y: 676},{x: 3100,y: 586}]},{type: 'scenery',points: [{x: 3220,y: 676},{x: 3220,y: 586}]},{type: 'scenery',points: [{x: 3100,y: 586},{x: 3220,y: 586},{x: 3220,y: 610},{x: 3100,y: 610},{x: 3100,y: 586}]},{type: 'scenery',points: [{x: 3120,y: 586},{x: 3120,y: 610}]},{type: 'scenery',points: [{x: 3140,y: 586},{x: 3140,y: 610}]},{type: 'scenery',points: [{x: 3160,y: 586},{x: 3160,y: 610}]},{type: 'scenery',points: [{x: 3180,y: 586},{x: 3180,y: 610}]},{type: 'scenery',points: [{x: 3200,y: 586},{x: 3200,y: 610}]}] },
+  { id: 'bigramp_whoops', name: 'Whoop Valley', pieces: ['bigramp','whoops'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'boost',points: [{x: 0,y: 0},{x: 140,y: 6}]},{type: 'normal',points: [{x: 140,y: 6},{x: 180,y: 6},{x: 201,y: 6},{x: 221,y: 4},{x: 240,y: 2},{x: 258,y: -2},{x: 274,y: -6},{x: 290,y: -11},{x: 304,y: -18},{x: 318,y: -25},{x: 330,y: -33},{x: 341,y: -43},{x: 351,y: -53},{x: 360,y: -64}]},{type: 'normal',points: [{x: 540,y: -34},{x: 560,y: -26},{x: 580,y: -18},{x: 600,y: -10},{x: 620,y: -3},{x: 640,y: 4},{x: 660,y: 11},{x: 680,y: 18},{x: 700,y: 24},{x: 720,y: 30},{x: 740,y: 35},{x: 760,y: 41},{x: 780,y: 46},{x: 1040,y: 56}]},{type: 'normal',points: [{x: 1040,y: 56},{x: 1053,y: 57},{x: 1067,y: 55},{x: 1080,y: 52},{x: 1093,y: 50},{x: 1107,y: 48},{x: 1120,y: 49},{x: 1133,y: 52},{x: 1147,y: 58},{x: 1160,y: 65},{x: 1173,y: 72},{x: 1187,y: 78},{x: 1200,y: 82},{x: 1213,y: 82},{x: 1227,y: 81},{x: 1240,y: 78},{x: 1253,y: 75},{x: 1267,y: 74},{x: 1280,y: 74},{x: 1293,y: 78},{x: 1307,y: 84},{x: 1320,y: 91},{x: 1333,y: 98},{x: 1347,y: 104},{x: 1360,y: 107},{x: 1373,y: 108},{x: 1387,y: 107},{x: 1400,y: 104},{x: 1413,y: 101},{x: 1427,y: 99},{x: 1440,y: 100},{x: 1453,y: 104},{x: 1467,y: 109},{x: 1480,y: 116},{x: 1493,y: 124},{x: 1507,y: 129},{x: 1520,y: 133},{x: 1720,y: 136}]},{type: 'normal',points: [{x: 1720,y: 136},{x: 2220,y: 176}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 2040,y: 166},{x: 2040,y: 76}]},{type: 'scenery',points: [{x: 2160,y: 166},{x: 2160,y: 76}]},{type: 'scenery',points: [{x: 2040,y: 76},{x: 2160,y: 76},{x: 2160,y: 100},{x: 2040,y: 100},{x: 2040,y: 76}]},{type: 'scenery',points: [{x: 2060,y: 76},{x: 2060,y: 100}]},{type: 'scenery',points: [{x: 2080,y: 76},{x: 2080,y: 100}]},{type: 'scenery',points: [{x: 2100,y: 76},{x: 2100,y: 100}]},{type: 'scenery',points: [{x: 2120,y: 76},{x: 2120,y: 100}]},{type: 'scenery',points: [{x: 2140,y: 76},{x: 2140,y: 100}]}] },
+  { id: 'skijump_stairs', name: 'Stair Drop', pieces: ['skijump','stairs'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'normal',points: [{x: 0,y: 0},{x: 20,y: 2},{x: 40,y: 6},{x: 60,y: 11},{x: 80,y: 17},{x: 100,y: 24},{x: 120,y: 33},{x: 140,y: 42},{x: 160,y: 53},{x: 180,y: 66},{x: 200,y: 79},{x: 220,y: 94},{x: 240,y: 110},{x: 255,y: 119},{x: 271,y: 127},{x: 288,y: 134},{x: 305,y: 139},{x: 323,y: 143},{x: 341,y: 145},{x: 360,y: 146},{x: 380,y: 146},{x: 420,y: 138}]},{type: 'normal',points: [{x: 428,y: 160},{x: 467,y: 174},{x: 506,y: 188},{x: 544,y: 204},{x: 582,y: 221},{x: 621,y: 240},{x: 659,y: 259},{x: 697,y: 280},{x: 735,y: 302},{x: 773,y: 325},{x: 810,y: 350},{x: 848,y: 376},{x: 886,y: 402},{x: 923,y: 431},{x: 960,y: 460},{x: 981,y: 474},{x: 1003,y: 487},{x: 1026,y: 498},{x: 1050,y: 508},{x: 1076,y: 516},{x: 1103,y: 522},{x: 1131,y: 527},{x: 1160,y: 530},{x: 1400,y: 536}]},{type: 'normal',points: [{x: 1400,y: 536},{x: 1470,y: 536},{x: 1472,y: 564},{x: 1540,y: 564},{x: 1542,y: 592},{x: 1610,y: 592},{x: 1612,y: 620},{x: 1680,y: 620},{x: 1682,y: 648},{x: 1750,y: 648},{x: 1752,y: 676},{x: 1910,y: 680}]},{type: 'normal',points: [{x: 1910,y: 680},{x: 2410,y: 720}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 2230,y: 710},{x: 2230,y: 620}]},{type: 'scenery',points: [{x: 2350,y: 710},{x: 2350,y: 620}]},{type: 'scenery',points: [{x: 2230,y: 620},{x: 2350,y: 620},{x: 2350,y: 644},{x: 2230,y: 644},{x: 2230,y: 620}]},{type: 'scenery',points: [{x: 2250,y: 620},{x: 2250,y: 644}]},{type: 'scenery',points: [{x: 2270,y: 620},{x: 2270,y: 644}]},{type: 'scenery',points: [{x: 2290,y: 620},{x: 2290,y: 644}]},{type: 'scenery',points: [{x: 2310,y: 620},{x: 2310,y: 644}]},{type: 'scenery',points: [{x: 2330,y: 620},{x: 2330,y: 644}]}] },
+  { id: 'trampad_boostrun', name: 'Bounce Rush', pieces: ['trampad','boostrun'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'normal',points: [{x: 0,y: 0},{x: 80,y: 4}]},{type: 'trampoline',points: [{x: 100,y: 40},{x: 240,y: 100}]},{type: 'normal',points: [{x: 300,y: 0},{x: 340,y: 2},{x: 360,y: 4},{x: 379,y: 6},{x: 398,y: 9},{x: 417,y: 12},{x: 435,y: 16},{x: 453,y: 20},{x: 470,y: 24},{x: 487,y: 29},{x: 504,y: 34},{x: 520,y: 40},{x: 720,y: 46}]},{type: 'boost',points: [{x: 720,y: 46},{x: 920,y: 50},{x: 1120,y: 54},{x: 1280,y: 58}]},{type: 'normal',points: [{x: 1280,y: 58},{x: 1780,y: 98}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 1600,y: 88},{x: 1600,y: -2}]},{type: 'scenery',points: [{x: 1720,y: 88},{x: 1720,y: -2}]},{type: 'scenery',points: [{x: 1600,y: -2},{x: 1720,y: -2},{x: 1720,y: 22},{x: 1600,y: 22},{x: 1600,y: -2}]},{type: 'scenery',points: [{x: 1620,y: -2},{x: 1620,y: 22}]},{type: 'scenery',points: [{x: 1640,y: -2},{x: 1640,y: 22}]},{type: 'scenery',points: [{x: 1660,y: -2},{x: 1660,y: 22}]},{type: 'scenery',points: [{x: 1680,y: -2},{x: 1680,y: 22}]},{type: 'scenery',points: [{x: 1700,y: -2},{x: 1700,y: 22}]}] },
+  { id: 'kicker_gap', name: 'Mind the Gap', pieces: ['kicker','gap'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'boost',points: [{x: 0,y: 0},{x: 140,y: 6}]},{type: 'normal',points: [{x: 140,y: 6},{x: 200,y: 6},{x: 212,y: 6},{x: 223,y: 5},{x: 233,y: 4},{x: 243,y: 2},{x: 253,y: 0},{x: 261,y: -3},{x: 269,y: -7},{x: 277,y: -11},{x: 284,y: -15},{x: 290,y: -20}]},{type: 'normal',points: [{x: 610,y: -46},{x: 646,y: -43},{x: 682,y: -39},{x: 718,y: -34},{x: 754,y: -28},{x: 790,y: -22},{x: 826,y: -15},{x: 862,y: -7},{x: 898,y: 2},{x: 933,y: 12},{x: 969,y: 22},{x: 1004,y: 33},{x: 1039,y: 46},{x: 1075,y: 58},{x: 1110,y: 72},{x: 1145,y: 87},{x: 1180,y: 102},{x: 1380,y: 110}]},{type: 'boost',points: [{x: 1380,y: 110},{x: 1520,y: 116}]},{type: 'normal',points: [{x: 1520,y: 116},{x: 1600,y: 116},{x: 1614,y: 116},{x: 1626,y: 115},{x: 1638,y: 113},{x: 1650,y: 111},{x: 1660,y: 108},{x: 1670,y: 104},{x: 1678,y: 99},{x: 1686,y: 94},{x: 1694,y: 89},{x: 1700,y: 82}]},{type: 'normal',points: [{x: 1850,y: 86},{x: 1880,y: 86},{x: 1915,y: 87},{x: 1950,y: 88},{x: 1986,y: 90},{x: 2021,y: 94},{x: 2057,y: 98},{x: 2093,y: 104},{x: 2129,y: 110},{x: 2165,y: 118},{x: 2201,y: 126},{x: 2238,y: 135},{x: 2275,y: 146},{x: 2311,y: 157},{x: 2348,y: 169},{x: 2385,y: 183},{x: 2423,y: 197},{x: 2460,y: 212},{x: 2660,y: 220}]},{type: 'normal',points: [{x: 2660,y: 220},{x: 3160,y: 260}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 2980,y: 250},{x: 2980,y: 160}]},{type: 'scenery',points: [{x: 3100,y: 250},{x: 3100,y: 160}]},{type: 'scenery',points: [{x: 2980,y: 160},{x: 3100,y: 160},{x: 3100,y: 184},{x: 2980,y: 184},{x: 2980,y: 160}]},{type: 'scenery',points: [{x: 3000,y: 160},{x: 3000,y: 184}]},{type: 'scenery',points: [{x: 3020,y: 160},{x: 3020,y: 184}]},{type: 'scenery',points: [{x: 3040,y: 160},{x: 3040,y: 184}]},{type: 'scenery',points: [{x: 3060,y: 160},{x: 3060,y: 184}]},{type: 'scenery',points: [{x: 3080,y: 160},{x: 3080,y: 184}]}] },
+  { id: 'boostrun_skijump', name: 'Rocket Jump', pieces: ['boostrun','skijump'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'boost',points: [{x: 0,y: 0},{x: 200,y: 4},{x: 400,y: 8},{x: 560,y: 12}]},{type: 'normal',points: [{x: 560,y: 12},{x: 580,y: 14},{x: 600,y: 18},{x: 620,y: 23},{x: 640,y: 29},{x: 660,y: 36},{x: 680,y: 45},{x: 700,y: 54},{x: 720,y: 65},{x: 740,y: 78},{x: 760,y: 91},{x: 780,y: 106},{x: 800,y: 122},{x: 815,y: 131},{x: 831,y: 139},{x: 848,y: 146},{x: 865,y: 151},{x: 883,y: 155},{x: 901,y: 157},{x: 920,y: 158},{x: 940,y: 158},{x: 980,y: 150}]},{type: 'normal',points: [{x: 988,y: 172},{x: 1027,y: 186},{x: 1066,y: 200},{x: 1104,y: 216},{x: 1142,y: 233},{x: 1181,y: 252},{x: 1219,y: 271},{x: 1257,y: 292},{x: 1295,y: 314},{x: 1333,y: 337},{x: 1370,y: 362},{x: 1408,y: 388},{x: 1446,y: 414},{x: 1483,y: 443},{x: 1520,y: 472},{x: 1541,y: 486},{x: 1563,y: 499},{x: 1586,y: 510},{x: 1610,y: 520},{x: 1636,y: 528},{x: 1663,y: 534},{x: 1691,y: 539},{x: 1720,y: 542},{x: 1960,y: 548}]},{type: 'normal',points: [{x: 1960,y: 548},{x: 2460,y: 588}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 2280,y: 578},{x: 2280,y: 488}]},{type: 'scenery',points: [{x: 2400,y: 578},{x: 2400,y: 488}]},{type: 'scenery',points: [{x: 2280,y: 488},{x: 2400,y: 488},{x: 2400,y: 512},{x: 2280,y: 512},{x: 2280,y: 488}]},{type: 'scenery',points: [{x: 2300,y: 488},{x: 2300,y: 512}]},{type: 'scenery',points: [{x: 2320,y: 488},{x: 2320,y: 512}]},{type: 'scenery',points: [{x: 2340,y: 488},{x: 2340,y: 512}]},{type: 'scenery',points: [{x: 2360,y: 488},{x: 2360,y: 512}]},{type: 'scenery',points: [{x: 2380,y: 488},{x: 2380,y: 512}]}] },
+  { id: 'stairs_kicker_whoops', name: 'Triple Threat', pieces: ['stairs','kicker','whoops'], lines: [{type: 'normal',points: [{x: -500,y: -260},{x: -458,y: -218},{x: -417,y: -181},{x: -375,y: -146},{x: -333,y: -116},{x: -292,y: -88},{x: -250,y: -65},{x: -208,y: -45},{x: -167,y: -29},{x: -125,y: -16},{x: -83,y: -7},{x: -42,y: -2},{x: 0,y: 0}]},{type: 'normal',points: [{x: 0,y: 0},{x: 70,y: 0},{x: 72,y: 28},{x: 140,y: 28},{x: 142,y: 56},{x: 210,y: 56},{x: 212,y: 84},{x: 280,y: 84},{x: 282,y: 112},{x: 350,y: 112},{x: 352,y: 140},{x: 510,y: 144}]},{type: 'boost',points: [{x: 510,y: 144},{x: 650,y: 150}]},{type: 'normal',points: [{x: 650,y: 150},{x: 710,y: 150},{x: 722,y: 150},{x: 733,y: 149},{x: 743,y: 148},{x: 753,y: 146},{x: 763,y: 144},{x: 771,y: 141},{x: 779,y: 137},{x: 787,y: 133},{x: 794,y: 129},{x: 800,y: 124}]},{type: 'normal',points: [{x: 1120,y: 98},{x: 1156,y: 101},{x: 1192,y: 105},{x: 1228,y: 110},{x: 1264,y: 116},{x: 1300,y: 122},{x: 1336,y: 129},{x: 1372,y: 137},{x: 1408,y: 146},{x: 1443,y: 156},{x: 1479,y: 166},{x: 1514,y: 177},{x: 1549,y: 190},{x: 1585,y: 202},{x: 1620,y: 216},{x: 1655,y: 231},{x: 1690,y: 246},{x: 1890,y: 254}]},{type: 'normal',points: [{x: 1890,y: 254},{x: 1903,y: 255},{x: 1917,y: 253},{x: 1930,y: 250},{x: 1943,y: 248},{x: 1957,y: 246},{x: 1970,y: 247},{x: 1983,y: 250},{x: 1997,y: 256},{x: 2010,y: 263},{x: 2023,y: 270},{x: 2037,y: 276},{x: 2050,y: 280},{x: 2063,y: 280},{x: 2077,y: 279},{x: 2090,y: 276},{x: 2103,y: 273},{x: 2117,y: 272},{x: 2130,y: 272},{x: 2143,y: 276},{x: 2157,y: 282},{x: 2170,y: 289},{x: 2183,y: 296},{x: 2197,y: 302},{x: 2210,y: 305},{x: 2223,y: 306},{x: 2237,y: 305},{x: 2250,y: 302},{x: 2263,y: 299},{x: 2277,y: 297},{x: 2290,y: 298},{x: 2303,y: 302},{x: 2317,y: 307},{x: 2330,y: 314},{x: 2343,y: 322},{x: 2357,y: 327},{x: 2370,y: 331},{x: 2570,y: 334}]},{type: 'normal',points: [{x: 2570,y: 334},{x: 3070,y: 374}]},{type: 'scenery',points: [{x: 200,y: -40},{x: 200,y: -60}]},{type: 'scenery',points: [{x: 176,y: -60},{x: 200,y: -120},{x: 224,y: -60},{x: 176,y: -60}]},{type: 'scenery',points: [{x: 182,y: -86},{x: 200,y: -136},{x: 218,y: -86}]},{type: 'scenery',points: [{x: 2890,y: 364},{x: 2890,y: 274}]},{type: 'scenery',points: [{x: 3010,y: 364},{x: 3010,y: 274}]},{type: 'scenery',points: [{x: 2890,y: 274},{x: 3010,y: 274},{x: 3010,y: 298},{x: 2890,y: 298},{x: 2890,y: 274}]},{type: 'scenery',points: [{x: 2910,y: 274},{x: 2910,y: 298}]},{type: 'scenery',points: [{x: 2930,y: 274},{x: 2930,y: 298}]},{type: 'scenery',points: [{x: 2950,y: 274},{x: 2950,y: 298}]},{type: 'scenery',points: [{x: 2970,y: 274},{x: 2970,y: 298}]},{type: 'scenery',points: [{x: 2990,y: 274},{x: 2990,y: 298}]}] },
+];
+
+// Share your ride: a PNG of the canvas through the native share sheet.
+// (A video clip would need native screen recording, so we share a still image.)
+async function shareRideWeb(node) {
+  const svg = node && (node.querySelector ? node.querySelector('svg') : null);
+  if (!svg) throw new Error('Nothing to capture.');
+  const w = svg.clientWidth || 400;
+  const h = svg.clientHeight || 600;
+  const xml = new XMLSerializer().serializeToString(svg);
+  const img = new window.Image();
+  const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
+  await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Could not render image.')); img.src = src; });
+  const canvas = document.createElement('canvas');
+  canvas.width = w * 2; canvas.height = h * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  ctx.drawImage(img, 0, 0, w, h);
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+  const file = typeof File !== 'undefined' ? new File([blob], 'sketch-rider-ride.png', { type: 'image/png' }) : null;
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    await navigator.share({ files: [file], title: 'My Sketch Rider run' });
+    return 'shared';
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sketch-rider-ride.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  return 'downloaded';
+}
+
+const DAILY_STORAGE_KEY = 'phone-rider-daily-v1';
+// Online leaderboard is not wired up yet; with no URL the stub serves this device's own runs.
+const DAILY_LEADERBOARD_URL = null;
+const localDateKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function dailyCourseFor(dateKey) {
+  let h = 2166136261;
+  for (let i = 0; i < dateKey.length; i++) { h ^= dateKey.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return DAILY_COURSES[h % DAILY_COURSES.length];
+}
+const formatRunTime = (ms) => `${(ms / 1000).toFixed(2)}s`;
+// ── Track share codes ──────────────────────────────────────────────
+// "SR1." + base64url of: varint lineCount, then per line: typeIndex, varint pointCount,
+// zigzag-varint x/y (first point absolute, rest as deltas, rounded to whole units).
+const TRACK_CODE_PREFIX = 'SR1.';
+const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function bytesToB64url(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+    const chars = i + 1 >= bytes.length ? 2 : i + 2 >= bytes.length ? 3 : 4;
+    for (let c = 0; c < chars; c += 1) out += B64URL[(n >> (18 - 6 * c)) & 63];
+  }
+  return out;
+}
+function b64urlToBytes(str) {
+  const bytes = [];
+  let buf = 0; let bits = 0;
+  for (const ch of str) {
+    const v = B64URL.indexOf(ch);
+    if (v < 0) throw new Error('bad character');
+    buf = (buf << 6) | v; bits += 6;
+    if (bits >= 8) { bits -= 8; bytes.push((buf >> bits) & 255); }
+  }
+  return bytes;
+}
+function encodeTrackCode(lines) {
+  const out = [];
+  const uv = (n) => { let v = n >>> 0; while (v > 127) { out.push((v & 127) | 128); v >>>= 7; } out.push(v); };
+  const zz = (n) => uv(n >= 0 ? n * 2 : -n * 2 - 1);
+  const valid = (lines || []).filter((l) => l?.points?.length >= 2);
+  uv(valid.length);
+  valid.forEach((line) => {
+    uv(Math.max(0, LINE_TYPES.findIndex((t) => t.id === line.type)));
+    uv(line.points.length);
+    let px = 0; let py = 0;
+    line.points.forEach((p) => {
+      const x = Math.round(p.x); const y = Math.round(p.y);
+      zz(x - px); zz(y - py); px = x; py = y;
+    });
+  });
+  return TRACK_CODE_PREFIX + bytesToB64url(out);
+}
+function decodeTrackCode(code) {
+  const clean = String(code || '').replace(/\s+/g, '');
+  if (!clean.startsWith(TRACK_CODE_PREFIX)) throw new Error('Not a Sketch Rider track code');
+  const bytes = b64urlToBytes(clean.slice(TRACK_CODE_PREFIX.length));
+  let i = 0;
+  const uv = () => {
+    let v = 0; let shift = 0; let b;
+    do { if (i >= bytes.length) throw new Error('code is cut off'); b = bytes[i++]; v += (b & 127) * 2 ** shift; shift += 7; } while (b & 128);
+    return v;
+  };
+  const zz = () => { const v = uv(); return v % 2 ? -(v + 1) / 2 : v / 2; };
+  const count = uv();
+  if (count > 5000) throw new Error('too many lines');
+  const lines = [];
+  for (let l = 0; l < count; l += 1) {
+    const type = (LINE_TYPES[uv()] || LINE_TYPES[0]).id;
+    const n = uv();
+    if (n > 20000) throw new Error('too many points');
+    const points = [];
+    let x = 0; let y = 0;
+    for (let k = 0; k < n; k += 1) { x += zz(); y += zz(); points.push({ x, y }); }
+    lines.push({ type, points });
+  }
+  if (!lines.length) throw new Error('empty track');
+  return lines;
+}
+
+async function fetchDailyLeaderboard(dateKey, localRuns) {
+  const local = (localRuns || []).slice().sort((a, b) => a.ms - b.ms).slice(0, 5).map((r) => ({ ...r, name: 'You' }));
+  if (!DAILY_LEADERBOARD_URL) return { source: 'local', entries: local };
+  try {
+    const res = await fetch(`${DAILY_LEADERBOARD_URL}?date=${dateKey}`);
+    const json = await res.json();
+    return { source: 'online', entries: Array.isArray(json?.entries) ? json.entries : local };
+  } catch (_) {
+    return { source: 'local', entries: local };
+  }
+}
+
 function closestPointOnSegment(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1, lenSq = dx * dx + dy * dy;
   if (lenSq === 0) return { x: x1, y: y1 };
@@ -862,10 +1202,43 @@ const TRAIL_TYPES = [
   { id: 'lightning', name: 'Lightning', icon: '⚡', color: '#ffe94a', priceUsd: 0.99 },
   { id: 'pixel', name: 'Pixel Retro', icon: '👾', color: '#3bff8a', priceUsd: 0.99 },
   { id: 'comet', name: 'Stardust Comet', icon: '☄️', color: '#9fb4ff', priceUsd: 0.99 },
+  { id: 'leaves', name: 'Falling Leaves', icon: '🍂', color: '#ff8a1e', priceUsd: 0.99, seasonal: 'thanksgiving' },
+  { id: 'snowflakes', name: 'Snowflakes', icon: '❄️', color: '#cfefff', priceUsd: 0.99, seasonal: 'christmas' },
+  { id: 'candycane', name: 'Candy Cane', icon: '🍬', color: '#ff2d55', priceUsd: 0.99, seasonal: 'christmas' },
+  { id: 'twinklelights', name: 'Twinkle Lights', icon: '🎄', color: '#3bff8a', priceUsd: 0.99, seasonal: 'christmas' },
+  { id: 'fireworks', name: 'Fireworks', icon: '🎆', color: '#ffd23b', priceUsd: 0.99, seasonal: 'newyear' },
+  { id: 'shamrocks', name: 'Shamrocks', icon: '☘️', color: '#3bff8a', priceUsd: 0.99, seasonal: 'stpatrick' },
 ].map((t) => ({ ...t, productId: t.priceUsd > 0 ? `trail_${t.id}_1usd` : null }));
-const HALLOWEEN_TRAIL_IDS = TRAIL_TYPES.filter((t) => t.seasonal === 'halloween').map((t) => t.id);
-const DEFAULT_OWNED_TRAILS = ['classic', 'rainbow', 'sparkles', ...(HALLOWEEN_ACTIVE ? HALLOWEEN_TRAIL_IDS : [])];
+const EVENT_TRAIL_IDS = TRAIL_TYPES.filter((t) => isEventFree(t.seasonal)).map((t) => t.id);
+const DEFAULT_OWNED_TRAILS = ['classic', 'rainbow', 'sparkles', ...EVENT_TRAIL_IDS];
 const TRAIL_MAX_PARTICLES = 28;
+// Holiday bundle: one $2.99 non-consumable that unlocks every paid Thanksgiving + Christmas rider and trail.
+const HOLIDAY_BUNDLE = {
+  productId: 'bundle_holiday_2026',
+  name: 'Holiday Bundle',
+  priceUsd: 2.99,
+  priceLabel: '$2.99',
+  riders: ['turkey', 'pilgrim', 'elf', 'reindeer', 'snowman'],
+  trails: ['leaves', 'snowflakes', 'candycane', 'twinklelights'],
+};
+// Expands store purchases (single items and bundles) into rider/trail ids.
+function unlocksFromPurchases(purchases) {
+  const riders = [];
+  const trails = [];
+  (purchases || []).forEach((p) => {
+    const productId = p?.productId || p?.id;
+    if (productId === HOLIDAY_BUNDLE.productId) {
+      riders.push(...HOLIDAY_BUNDLE.riders);
+      trails.push(...HOLIDAY_BUNDLE.trails);
+      return;
+    }
+    const r = riderIdFromProductId(productId);
+    const t = trailIdFromProductId(productId);
+    if (r) riders.push(r);
+    if (t) trails.push(t);
+  });
+  return { riders, trails };
+}
 function trailIdFromProductId(productId) {
   const t = TRAIL_TYPES.find((x) => x.productId && x.productId === productId);
   return t ? t.id : null;
@@ -883,6 +1256,137 @@ function renderTrail(trailId, pts, riderColor, t, scale = 1) {
   for (let i = n - 1; i >= 0; i -= step) idx.push(i);
   const age = (i) => 1 - i / (n - 1); // 0 = newest
   switch (trailId) {
+    case 'leaves': {
+      const cols = ['#ff7a1e', '#ffb02e', '#d9481c', '#ffd23b', '#a3471a'];
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#ff8a1e" strokeOpacity={0.14} strokeWidth={W} fill="none" strokeLinecap="round" />
+          {idx.map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const fall = a * 26 * scale;
+            const x = pts[i].x + (h - 0.5) * W * 1.6 + Math.sin(t * 3 + h * 12) * 4 * scale * a;
+            const y = pts[i].y + (trailHash(h * 7) - 0.5) * W + fall;
+            const r = (3.2 + h * 2.4) * scale;
+            const rot = (t * 120 + h * 360) % 360;
+            return (
+              <G key={i} opacity={(1 - a) * 0.95} transform={`translate(${x},${y}) rotate(${rot})`}>
+                <Path d={`M0,${-r} Q${r * 0.8},${-r * 0.2} 0,${r} Q${-r * 0.8},${-r * 0.2} 0,${-r} Z`} fill={cols[Math.floor(h * cols.length)]} />
+                <Line x1={0} y1={-r} x2={0} y2={r * 1.2} stroke="#5a2a12" strokeWidth={0.5 * scale} />
+              </G>
+            );
+          })}
+        </G>
+      );
+    }
+    case 'snowflakes':
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#cfefff" strokeOpacity={0.16} strokeWidth={W} fill="none" strokeLinecap="round" />
+          {idx.map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const x = pts[i].x + (h - 0.5) * W * 1.5 + Math.sin(t * 2 + h * 9) * 3 * scale * a;
+            const y = pts[i].y + (trailHash(h * 5) - 0.5) * W + a * 14 * scale;
+            const r = (2.6 + h * 2.6) * scale * (1 - a * 0.4);
+            const rot = t * 40 + h * 60;
+            return (
+              <G key={i} opacity={(1 - a) * 0.95} transform={`translate(${x},${y}) rotate(${rot})`}>
+                {[0, 60, 120].map((d) => (
+                  <G key={d} rotation={d}>
+                    <Line x1={-r} y1={0} x2={r} y2={0} stroke="#eaf8ff" strokeWidth={0.8 * scale} strokeLinecap="round" />
+                    <Line x1={r * 0.55} y1={0} x2={r * 0.8} y2={-r * 0.25} stroke="#bfe3ff" strokeWidth={0.5 * scale} />
+                    <Line x1={-r * 0.55} y1={0} x2={-r * 0.8} y2={r * 0.25} stroke="#bfe3ff" strokeWidth={0.5 * scale} />
+                  </G>
+                ))}
+                <Circle cx={0} cy={0} r={0.7 * scale} fill="#ffffff" />
+              </G>
+            );
+          })}
+        </G>
+      );
+    case 'candycane': {
+      const p = pointsToPath(pts);
+      return (
+        <G>
+          <Path d={p} stroke="#ff2d55" strokeOpacity={0.2} strokeWidth={W * 1.1} fill="none" strokeLinecap="round" />
+          <Path d={p} stroke="#ffffff" strokeOpacity={0.92} strokeWidth={W * 0.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <Path d={p} stroke="#ff2d55" strokeWidth={W * 0.5} fill="none" strokeLinejoin="round"
+            strokeDasharray={`${5 * scale} ${5 * scale}`} strokeDashoffset={-t * 30 * scale} />
+          <Path d={p} stroke="#ffffff" strokeOpacity={0.5} strokeWidth={W * 0.1} fill="none" strokeLinecap="round" />
+        </G>
+      );
+    }
+    case 'fireworks': {
+      const cols = ['#ffd23b', '#ff4fd8', '#3bd8ff', '#3bff8a', '#ff5a5a', '#ffffff'];
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#ffd23b" strokeOpacity={0.12} strokeWidth={W * 0.6} fill="none" strokeLinecap="round" />
+          {idx.filter((_, k) => k % 3 === 0).map((i, k) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const c = cols[Math.floor(h * cols.length)];
+            const x = pts[i].x + (h - 0.5) * W; const y = pts[i].y - (6 + h * 10) * scale;
+            const R = (3 + a * 14) * scale;
+            return (
+              <G key={i} opacity={(1 - a) * 0.95}>
+                {Array.from({ length: 8 }).map((__, r) => {
+                  const ang = (r / 8) * Math.PI * 2 + h * 3;
+                  return <Line key={r} x1={x + Math.cos(ang) * R * 0.45} y1={y + Math.sin(ang) * R * 0.45} x2={x + Math.cos(ang) * R} y2={y + Math.sin(ang) * R + a * 3 * scale}
+                    stroke={c} strokeWidth={1.1 * scale} strokeLinecap="round" />;
+                })}
+                <Circle cx={x} cy={y} r={(1.6 - a) * scale} fill="#ffffff" />
+              </G>
+            );
+          })}
+          {idx.map((i, k) => (k % 3 === 0 ? null : (
+            <Circle key={`f${i}`} cx={pts[i].x} cy={pts[i].y} r={0.9 * scale} fill="#ffe9a6" opacity={(1 - age(i)) * (0.5 + 0.5 * Math.sin(t * 9 + k))} />
+          )))}
+        </G>
+      );
+    }
+    case 'shamrocks': {
+      const cols = ['#22c55e', '#3bff8a', '#16a34a', '#86efac'];
+      return (
+        <G>
+          <Path d={pointsToPath(pts)} stroke="#3bff8a" strokeOpacity={0.14} strokeWidth={W} fill="none" strokeLinecap="round" />
+          {idx.map((i) => {
+            const a = age(i); const h = trailHash(seed(i));
+            const x = pts[i].x + (h - 0.5) * W * 1.4; const y = pts[i].y + (trailHash(h * 3) - 0.5) * W + a * 10 * scale;
+            const r = (2.2 + h * 1.8) * scale; const c = cols[Math.floor(h * cols.length)];
+            return (
+              <G key={i} opacity={(1 - a) * 0.95} transform={`translate(${x},${y}) rotate(${t * 50 + h * 90})`}>
+                {[0, 120, 240].map((d) => (
+                  <G key={d} rotation={d}>
+                    <Circle cx={-r * 0.45} cy={-r * 0.9} r={r * 0.55} fill={c} />
+                    <Circle cx={r * 0.45} cy={-r * 0.9} r={r * 0.55} fill={c} />
+                  </G>
+                ))}
+                <Line x1={0} y1={0} x2={r * 0.6} y2={r * 1.3} stroke="#166534" strokeWidth={0.6 * scale} strokeLinecap="round" />
+              </G>
+            );
+          })}
+        </G>
+      );
+    }
+    case 'twinklelights': {
+      const cols = ['#ff3b3b', '#3bff8a', '#ffd23b', '#3bd8ff', '#ff4fd8'];
+      return (
+        <G>
+          <Path d={pointsToPath(pts.map((p, k) => ({ x: p.x, y: p.y + Math.sin(k * 0.5) * 2.5 * scale })))} stroke="#1f5a2e" strokeWidth={1.4 * scale} fill="none" strokeLinecap="round" />
+          {idx.map((i, k) => {
+            const a = age(i);
+            const on = 0.45 + 0.55 * Math.abs(Math.sin(t * 5 + k * 1.3));
+            const c = cols[k % cols.length];
+            const x = pts[i].x; const y = pts[i].y + Math.sin(i * 0.5) * 2.5 * scale + 2.6 * scale;
+            return (
+              <G key={i} opacity={(1 - a * 0.7)}>
+                <Circle cx={x} cy={y} r={5 * scale} fill={c} opacity={0.22 * on} />
+                <Ellipse cx={x} cy={y} rx={1.7 * scale} ry={2.4 * scale} fill={c} opacity={on} />
+                <Rect x={x - 1 * scale} y={y - 3.6 * scale} width={2 * scale} height={1.4 * scale} fill="#2b3340" />
+              </G>
+            );
+          })}
+        </G>
+      );
+    }
     case 'rainbow': {
       const cols = ['#ff3b6b', '#ffb02e', '#ffe94a', '#3bff8a', '#3bd8ff', '#b26bff'];
       return (
@@ -1615,6 +2119,298 @@ function renderCharacterSprite(riderTypeId, cfg, motion = {}) {
           </G>
         </G>
       );
+    case 'turkey': {
+      // Turkey on a neon racing board: fanned tail feathers flutter, wattle wobbles, head pecks.
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const flap = Math.sin(tt * 14) * 4;
+      const peck = Math.max(0, Math.sin(tt * 5)) * 1.2;
+      const fan = ['#c2410c', '#f59e0b', '#fde047', '#f59e0b', '#c2410c', '#7c2d12', '#ea580c'];
+      return (
+        <G>
+          <Path d="M-14,7 L12,7 Q15.6,7 16,4.4 L13.8,5.6 L-13,5.6 Q-14.6,5.6 -14,7 Z" fill="#1d1033" stroke={accent} strokeWidth={0.7} />
+          <Line x1={-11} y1={8.4} x2={11} y2={8.4} stroke={accent} strokeWidth={0.6} strokeOpacity={0.7} />
+          <Circle cx={-9} cy={8.6} r={1.2} fill="#0b1020" stroke={accent} strokeWidth={0.4} />
+          <Circle cx={9} cy={8.6} r={1.2} fill="#0b1020" stroke={accent} strokeWidth={0.4} />
+          <G translateY={-bob * 0.6}>
+            {fan.map((c, k) => {
+              const a = (-80 + k * 22 + (k % 2 ? flap : -flap) * 0.6) * Math.PI / 180;
+              const x2 = -5 + Math.sin(a) * 11.5; const y2 = -3 - Math.cos(a) * 11.5;
+              return <Path key={k} d={`M-5,-2 Q${-5 + Math.sin(a - 0.18) * 7},${-3 - Math.cos(a - 0.18) * 7} ${x2},${y2} Q${-5 + Math.sin(a + 0.18) * 7},${-3 - Math.cos(a + 0.18) * 7} -5,-2 Z`}
+                fill={c} stroke={OL} strokeWidth={0.35} />;
+            })}
+            <Path d="M-1.6,3.4 L-2.2,6 M2.4,3.4 L2.8,6" stroke="#f59e0b" strokeWidth={0.9} strokeLinecap="round" />
+            <Path d="M-3.6,6 L-1,6 M1.8,6 L4.2,6" stroke="#f59e0b" strokeWidth={0.7} strokeLinecap="round" />
+            <Ellipse cx={0} cy={-0.6} rx={6} ry={4.8} fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Path d="M-4,-1.6 Q-1,0.4 1.8,-1.6 M-3.6,0.8 Q-0.6,2.8 2.2,0.8" stroke="#5a2a12" strokeWidth={0.5} fill="none" />
+            <Path d={`M-1.2,-2 Q-2.4,${-5 - flap * 0.15} -4.6,${-3.8 - flap * 0.2}`} stroke="#5a2a12" strokeWidth={1.3} fill="none" strokeLinecap="round" />
+            <G translateX={peck} translateY={peck * 0.4}>
+              <Path d="M3,-3 Q3.6,-7 4.4,-9" stroke="#7c4a2a" strokeWidth={2.4} fill="none" strokeLinecap="round" />
+              <Circle cx={4.8} cy={-10.6} r={2.6} fill="#e8d5c0" stroke={OL} strokeWidth={0.45} />
+              <Circle cx={5.6} cy={-11.2} r={0.55} fill="#111" />
+              <Circle cx={5.8} cy={-11.4} r={0.18} fill="#fff" />
+              <Polygon points="7,-10.8 9.4,-10 7,-9.4" fill="#fbbf24" stroke={OL} strokeWidth={0.3} />
+              <Path d={`M7.2,-9.4 Q${7.6 + Math.sin(tt * 9) * 0.6},-7.6 ${6.8 + Math.sin(tt * 9) * 0.8},-6.6`} stroke="#ef4444" strokeWidth={1.1} fill="none" strokeLinecap="round" />
+              {/* racing goggles */}
+              <Path d="M2.4,-12 Q4.8,-13.6 7.4,-12.2" stroke={accent} strokeWidth={0.8} fill="none" />
+            </G>
+          </G>
+        </G>
+      );
+    }
+    case 'pilgrim': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const cape = Math.sin(tt * 8) * 1.4;
+      return (
+        <G>
+          <Defs>
+            <LinearGradient id="rs_pilgrim_wood" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#f6c98a" />
+              <Stop offset="1" stopColor="#8a4b1c" />
+            </LinearGradient>
+          </Defs>
+          <Path d="M-13,8.6 L9,8.6 C13,8.6 15,7 14.4,4.6" stroke={accent} strokeWidth={1.3} fill="none" strokeLinecap="round" />
+          <Path d="M-14,4.4 L10,4.4 C14,4.4 15.6,2.4 14.6,0 C14,2.2 12.6,3 10,3 L-13,3 Q-14.4,3 -14,4.4 Z" fill="url(#rs_pilgrim_wood)" stroke={OL} strokeWidth={0.6} />
+          <Rect x={-14} y={4.4} width={24} height={2.2} rx={0.6} fill="#8a4b1c" stroke={OL} strokeWidth={0.5} />
+          <Line x1={-9} y1={8.4} x2={-9} y2={6.6} stroke="#9aa3b3" strokeWidth={0.9} />
+          <Line x1={6} y1={8.4} x2={6} y2={6.6} stroke="#9aa3b3" strokeWidth={0.9} />
+          <G translateY={-bob * 0.6}>
+            <Path d="M-4,2.6 L4,2.6 L7.6,2.4" stroke="#2b2b33" strokeWidth={2.6} fill="none" strokeLinecap="round" />
+            <Rect x={6.4} y={0.8} width={3} height={2.4} rx={0.6} fill="#111" />
+            <Rect x={7.2} y={1.3} width={1.3} height={1.1} fill="none" stroke="#fbbf24" strokeWidth={0.35} />
+            <Path d={`M-6.4,-6 C-9,-4 ${-11 + cape},-1 ${-12.4 + cape},2.6 L-6,2.8 Z`} fill="#3f2a1d" stroke={OL} strokeWidth={0.4} />
+            <Path d="M-7.6,3 C-8.6,-1 -7.6,-5.6 -4.2,-6.4 C-1,-7 1,-4.6 0.6,-1 L0,3 Z" fill="#26262e" stroke={OL} strokeWidth={0.6} />
+            <Path d="M-6,-6 L-3.2,-3.4 L-0.6,-6" fill="#f8f5ec" stroke={OL} strokeWidth={0.35} />
+            <Path d={`M-2,-4 L3,-1.6 L${6 - sway * 0.4},1.6`} stroke="#26262e" strokeWidth={1.8} fill="none" strokeLinecap="round" />
+            <Circle cx={6 - sway * 0.4} cy={1.6} r={0.95} fill={SKIN} />
+            <Circle cx={-3.4} cy={-9.6} r={3.4} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Circle cx={-1.6} cy={-9.8} r={0.5} fill="#1b2030" />
+            <Circle cx={-1.2} cy={-8.4} r={0.7} fill="#ff9a9a" opacity={0.7} />
+            <Path d="M-6.8,-9.6 Q-7.6,-7.6 -6.4,-6.6" stroke="#7a4a22" strokeWidth={1.2} fill="none" />
+            {/* capotain hat with buckle */}
+            <Rect x={-8.6} y={-12.2} width={10.4} height={1.3} rx={0.5} fill="#1b1b22" stroke={OL} strokeWidth={0.4} />
+            <Path d="M-6.6,-12.2 L-6,-18.4 L-0.8,-18.4 L-0.2,-12.2 Z" fill="#1b1b22" stroke={OL} strokeWidth={0.45} />
+            <Rect x={-6.4} y={-14} width={6} height={1.3} fill="#5b3a1e" />
+            <Rect x={-4.4} y={-14.4} width={2} height={2} fill="none" stroke="#fbbf24" strokeWidth={0.55} />
+            <Line x1={-5.8} y1={-18.1} x2={-1.2} y2={-18.1} stroke={accent} strokeWidth={0.4} strokeOpacity={0.8} />
+          </G>
+        </G>
+      );
+    }
+    case 'santa': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const wave = Math.sin(tt * 6) * 18;
+      const jingle = Math.sin(tt * 20) * 0.5;
+      return (
+        <G>
+          <Defs>
+            <LinearGradient id="rs_santa_sleigh" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#ff6b6b" />
+              <Stop offset="1" stopColor="#8b0d1c" />
+            </LinearGradient>
+          </Defs>
+          {/* gold runners with curl */}
+          <Path d="M-15,8.6 L10,8.6 C15,8.6 16.6,5.4 14.4,3.4 C13,2.4 11.4,3.6 12.4,4.8" stroke="#ffd23b" strokeWidth={1.3} fill="none" strokeLinecap="round" />
+          <Line x1={-10} y1={8.4} x2={-9} y2={5.4} stroke="#ffd23b" strokeWidth={0.9} />
+          <Line x1={6} y1={8.4} x2={5} y2={5.4} stroke="#ffd23b" strokeWidth={0.9} />
+          {/* gift sack behind */}
+          <Path d="M-14,-1 C-16,-6 -13,-10 -9.6,-9.4 C-7,-9 -6.6,-5 -7.4,-1 Z" fill="#7a5230" stroke={OL} strokeWidth={0.45} />
+          <Rect x={-13} y={-8.6} width={3.4} height={3} fill="#22c55e" stroke={OL} strokeWidth={0.3} />
+          <Line x1={-11.3} y1={-8.6} x2={-11.3} y2={-5.6} stroke="#ffd23b" strokeWidth={0.5} />
+          {/* sleigh body */}
+          <Path d="M-14,5.6 L-13,-1 L-6,-0.6 C-3,2 4,2 8,-1 C11,-3 13.6,-1.6 13,1.2 C12.4,4 9,5.6 6,5.6 Z" fill="url(#rs_santa_sleigh)" stroke={OL} strokeWidth={0.6} />
+          <Path d="M-12.6,1.4 L7,1.4" stroke="#ffd23b" strokeWidth={0.6} strokeDasharray="1.4 1" />
+          <G translateY={-bob * 0.5}>
+            <Path d="M-6,-0.6 C-7,-5 -5,-8.4 -1.6,-8.6 C1.6,-8.8 3,-6 2.6,-0.8 Z" fill="#d61f2c" stroke={OL} strokeWidth={0.55} />
+            <Rect x={-5.8} y={-3.4} width={8.2} height={1.4} fill="#111" />
+            <Rect x={-2.4} y={-3.6} width={1.8} height={1.8} fill="none" stroke="#ffd23b" strokeWidth={0.45} />
+            {/* waving arm */}
+            <G rotation={-30 + wave} originX={1.6} originY={-6.4}>
+              <Path d="M1.6,-6.4 L6,-8.6" stroke="#d61f2c" strokeWidth={1.8} strokeLinecap="round" />
+              <Circle cx={6.4} cy={-8.8} r={1} fill="#f8f5ec" stroke={OL} strokeWidth={0.3} />
+            </G>
+            <Circle cx={-1.6} cy={-11.2} r={3.3} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-4.8,-11 C-5.4,-6.8 -2.6,-5.6 -1.4,-5.6 C0.4,-5.6 2.4,-7.2 1.6,-11 Q-1.6,-9.6 -4.8,-11 Z" fill="#f8f5ec" stroke="#cbd5e1" strokeWidth={0.3} />
+            <Circle cx={-0.2} cy={-12} r={0.45} fill="#1b2030" />
+            <Circle cx={0.9} cy={-10.8} r={0.75} fill="#ff8a8a" />
+            <Path d={`M-5,-12.6 C-4.6,-17 0.4,-17.6 2.4,-14.4 C3.6,-12.8 5.4,${-14 + jingle} 6.6,${-12.6 + jingle}`} fill="#d61f2c" stroke={OL} strokeWidth={0.45} />
+            <Rect x={-5.2} y={-13.6} width={7.8} height={1.6} rx={0.8} fill="#f8f5ec" />
+            <Circle cx={6.8} cy={-12.2 + jingle} r={1.1} fill="#f8f5ec" />
+          </G>
+        </G>
+      );
+    }
+    case 'elf': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const bell = Math.sin(tt * 10) * 1.6;
+      return (
+        <G>
+          <Path d="M-14,6.4 L13,6.4 Q16,6.1 16.2,4.6 L14,5.2 L-13,5.2 Q-14.8,5.2 -14,6.4 Z" fill="#16a34a" stroke={OL} strokeWidth={0.6} />
+          <Path d="M-12,6 L12,6" stroke="#ef4444" strokeWidth={0.6} strokeDasharray="1.6 1.6" />
+          <G translateY={-bob * 0.8}>
+            <Path d="M-2.5,0 L-5.2,3.2 L-3.6,5.2" stroke="#ef4444" strokeWidth={2.2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M2,0 L5,2.8 L4,5.2" stroke="#f8f5ec" strokeWidth={2.2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <Path d="M-6.4,4.6 Q-7.6,3.6 -6.6,3 L-3,4.4 Z M3,4.4 L7.4,3 Q8.6,3.6 7.2,4.6 Z" fill="#7c3a12" stroke={OL} strokeWidth={0.3} />
+            <Path d="M-4.6,1.2 C-6,-3 -4,-7 0,-7.6 C3.4,-7.8 5.2,-5.6 4.8,-2.4 L4.2,1.2 L2.4,2.2 L0.4,1 L-1.6,2.2 Z" fill={primary} stroke={OL} strokeWidth={0.55} />
+            <Rect x={-4.6} y={-1.4} width={9.2} height={1.3} fill="#111" />
+            <Rect x={-0.8} y={-1.6} width={1.7} height={1.7} fill="none" stroke="#ffd23b" strokeWidth={0.45} />
+            <Path d={`M-3,-5 L${-7 - sway},${-3 + sway * 0.5} M3.6,-5 L${7.6 + sway},${-3.4 - sway * 0.5}`} stroke={primary} strokeWidth={1.6} strokeLinecap="round" />
+            <Circle cx={-7.2 - sway} cy={-2.8 + sway * 0.5} r={0.9} fill={SKIN} />
+            <Circle cx={7.8 + sway} cy={-3.6 - sway * 0.5} r={0.9} fill={SKIN} />
+            <Circle cx={0.6} cy={-10.8} r={3.3} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-2.6,-11 L-4.8,-12.6 L-2.8,-9.8 Z M3.8,-11 L6,-12.6 L4,-9.8 Z" fill={SKIN} stroke={OL} strokeWidth={0.35} />
+            <Circle cx={-0.4} cy={-10.8} r={0.45} fill="#1b2030" />
+            <Circle cx={1.8} cy={-10.8} r={0.45} fill="#1b2030" />
+            <Path d="M-0.4,-9.2 Q0.7,-8.4 1.8,-9.2" stroke="#9b2c2c" strokeWidth={0.4} fill="none" />
+            {/* floppy hat with bell */}
+            <Path d={`M-2.8,-12.6 C-2,-16.4 2.6,-17.6 5,-16 C6.8,-15 8.4,${-14 + bell * 0.4} ${9.4},${-12 + bell}`} stroke="#16a34a" strokeWidth={2.6} fill="none" strokeLinecap="round" />
+            <Path d="M-3.2,-12.4 Q0.6,-13.8 4.4,-12.4" stroke="#ef4444" strokeWidth={1.2} fill="none" strokeLinecap="round" />
+            <Circle cx={9.6} cy={-11.4 + bell} r={1} fill="#ffd23b" stroke={OL} strokeWidth={0.3} />
+          </G>
+        </G>
+      );
+    }
+    case 'reindeer': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const glow = 0.55 + 0.45 * Math.sin(tt * 7);
+      const kick = Math.sin(tt * 9) * 1.2;
+      return (
+        <G>
+          <Path d="M-15,8 L13,8 Q16,7.8 16.4,5.8" stroke="#cbd5e1" strokeWidth={1.4} fill="none" strokeLinecap="round" />
+          <Path d="M-15,9.6 L13,9.6 Q16,9.4 16.4,7.4" stroke={accent} strokeWidth={1} fill="none" strokeLinecap="round" strokeOpacity={0.8} />
+          <G translateY={-bob * 0.6}>
+            {/* legs */}
+            <Path d={`M-7,1 L${-8 - kick},7.4 M-4,1.4 L${-3.6 + kick},7.4 M3.4,1 L${3 + kick},7.4 M6,0.6 L${7 - kick},7.4`} stroke="#6b3e1f" strokeWidth={1.3} strokeLinecap="round" />
+            <Path d={`M${-8.6 - kick},7.6 h1.4 M${-4.2 + kick},7.6 h1.4 M${2.4 + kick},7.6 h1.4 M${6.4 - kick},7.6 h1.4`} stroke="#1b1b22" strokeWidth={1} />
+            <Ellipse cx={-0.6} cy={-0.6} rx={8.4} ry={3.6} fill={primary} stroke={OL} strokeWidth={0.6} />
+            <Ellipse cx={-0.6} cy={0.6} rx={6} ry={1.8} fill="#e8c9a0" opacity={0.8} />
+            <Path d="M-9,-1.6 Q-11,-3.6 -10.4,-0.4" fill="#f8f5ec" stroke={OL} strokeWidth={0.3} />
+            {/* collar with bells */}
+            <Path d="M5.2,-3.2 Q7,-0.6 8.8,-2.6" stroke="#dc2626" strokeWidth={1.1} fill="none" />
+            <Circle cx={7} cy={-0.6} r={0.7} fill="#ffd23b" />
+            <Path d="M5.4,-2.6 Q6.4,-6.6 8,-8.4" stroke={primary} strokeWidth={3} strokeLinecap="round" />
+            <Ellipse cx={9.6} cy={-9.6} rx={3.2} ry={2.4} fill={primary} stroke={OL} strokeWidth={0.5} />
+            <Ellipse cx={12.4} cy={-8.8} rx={1.4} ry={1.1} fill="#8a5a33" />
+            <Circle cx={13.6} cy={-8.8} r={2.6} fill="#ff3b3b" opacity={glow * 0.35} />
+            <Circle cx={13.6} cy={-8.8} r={1.1} fill="#ff2d2d" stroke={OL} strokeWidth={0.3} />
+            <Circle cx={10.4} cy={-10.4} r={0.5} fill="#111" />
+            <Path d="M7.6,-11.2 L6,-12.4 L7.8,-10.4 Z" fill="#8a5a33" stroke={OL} strokeWidth={0.3} />
+            {/* antlers */}
+            <Path d="M8.6,-11.6 L7.4,-16.4 L5.4,-18 M7.6,-15.4 L9.4,-17.4 M10.4,-11.8 L11.4,-16 L13.6,-17.6 M11.2,-15 L10,-17.6" stroke="#d4a373" strokeWidth={0.9} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            {/* scarf */}
+            <Path d={`M5,-4 L${1.6 - sway},${-5.6 + Math.sin(tt * 10) * 0.8} L${1.2 - sway},${-4 + Math.sin(tt * 10) * 0.8}`} stroke={accent} strokeWidth={1} fill="none" strokeLinecap="round" />
+          </G>
+        </G>
+      );
+    }
+    case 'cupid': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const flap = Math.sin(tt * 16) * 18;
+      return (
+        <G>
+          <Path d="M-14,7 L12,7 Q15.6,7 16,4.4 L13.8,5.6 L-13,5.6 Q-14.6,5.6 -14,7 Z" fill="#7a1240" stroke={primary} strokeWidth={0.7} />
+          <Path d="M-1.6,8.6 C-3.4,7 -1.2,5.8 0,7.2 C1.2,5.8 3.4,7 1.6,8.6 L0,10 Z" fill={primary} />
+          <G translateY={-bob * 0.7}>
+            {/* wings */}
+            <G rotation={-flap} originX={-2.4} originY={-5}>
+              <Path d="M-2.4,-5 C-8,-12 -13,-9 -12,-4.6 C-9.4,-6 -6,-5 -2.4,-3.4 Z" fill="#fff5fb" stroke={OL} strokeWidth={0.4} />
+            </G>
+            <G rotation={flap * 0.6} originX={-1.6} originY={-5}>
+              <Path d="M-1.6,-5 C-6,-10.6 -10.4,-8.4 -9.4,-4.6 C-7.2,-5.4 -4.4,-4.6 -1.6,-3.4 Z" fill="#ffd6ea" stroke={OL} strokeWidth={0.35} />
+            </G>
+            <Path d="M-1.6,3 L-2.4,5.8 M2,3 L2.6,5.8" stroke={SKIN} strokeWidth={1.4} strokeLinecap="round" />
+            <Path d="M-3.8,3.2 C-4.4,-1 -3.6,-5 0,-5.4 C3.6,-5 4.4,-1 3.8,3.2 Z" fill="#ffffff" stroke={OL} strokeWidth={0.5} />
+            <Path d="M-3.8,1 L3.8,1" stroke={primary} strokeWidth={1.2} />
+            {/* golden bow */}
+            <Path d={`M7.6,-8 Q11,-2 7.6,4`} stroke={accent} strokeWidth={0.9} fill="none" />
+            <Line x1={7.6} y1={-8} x2={7.6} y2={4} stroke="#fff3a6" strokeWidth={0.35} />
+            <Path d={`M2.4,-1.6 L${7.2 - sway * 0.3},-2`} stroke={SKIN} strokeWidth={1.2} strokeLinecap="round" />
+            <Line x1={4} y1={-2} x2={12.6} y2={-2} stroke="#8a5a2b" strokeWidth={0.5} />
+            <Path d="M12.4,-3.2 L14.6,-2 L12.4,-0.8 Z" fill={primary} />
+            <Circle cx={0} cy={-8.6} r={3.6} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-3.4,-9.6 C-3,-12.8 2.6,-13.2 3.4,-9.8 C2,-11.2 -1.6,-11.4 -3.4,-9.6 Z" fill="#fbbf24" stroke={OL} strokeWidth={0.3} />
+            <Circle cx={1.2} cy={-8.8} r={0.45} fill="#111" />
+            <Circle cx={2.8} cy={-7.6} r={0.7} fill="#ff8fb8" opacity={0.7} />
+            <Ellipse cx={0} cy={-14} rx={3} ry={0.8} fill="none" stroke={accent} strokeWidth={0.6} />
+          </G>
+        </G>
+      );
+    }
+    case 'leprechaun': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const jig = Math.sin(tt * 8) * 1.2;
+      return (
+        <G>
+          <Path d="M-14,7 L12,7 Q15.6,7 16,4.4 L13.8,5.6 L-13,5.6 Q-14.6,5.6 -14,7 Z" fill="#14532d" stroke={accent} strokeWidth={0.7} />
+          <Circle cx={-8} cy={6.3} r={0.9} fill={accent} />
+          <Circle cx={8} cy={6.3} r={0.9} fill={accent} />
+          <G translateY={-bob * 0.6}>
+            {/* pot of gold */}
+            <Path d="M-11.4,1 L-6.6,1 L-7.2,5.4 L-10.8,5.4 Z" fill="#1f2937" stroke={OL} strokeWidth={0.4} />
+            <Circle cx={-10.2} cy={0.6} r={1} fill={accent} />
+            <Circle cx={-8} cy={0.4} r={1} fill="#ffe066" />
+            <Circle cx={-9} cy={-0.4} r={0.9} fill={accent} />
+            <Path d={`M-1.6,3 L${-2.6 + jig},5.8 M2,3 L${2.8 - jig},5.8`} stroke="#14532d" strokeWidth={1.4} strokeLinecap="round" />
+            <Path d="M-4,3.2 C-4.6,-1 -3.6,-5.2 0,-5.6 C3.6,-5.2 4.6,-1 4,3.2 Z" fill={primary} stroke={OL} strokeWidth={0.5} />
+            <Rect x={-4.2} y={0.2} width={8.4} height={1.2} fill="#111" />
+            <Rect x={-0.9} y={0} width={1.8} height={1.6} fill="none" stroke={accent} strokeWidth={0.4} />
+            <Path d={`M2.6,-2.6 L6,-1 L${8.4 - sway * 0.4},1.2`} stroke={primary} strokeWidth={1.6} fill="none" strokeLinecap="round" />
+            <Circle cx={8.4 - sway * 0.4} cy={1.2} r={0.9} fill={SKIN} />
+            <Circle cx={0} cy={-8.6} r={3.5} fill={SKIN} stroke={OL} strokeWidth={0.5} />
+            <Path d="M-3.4,-8 C-3.6,-4 3.6,-4 3.4,-8 C2,-6.4 -2,-6.4 -3.4,-8 Z" fill="#ea580c" stroke={OL} strokeWidth={0.3} />
+            <Circle cx={1.3} cy={-9.4} r={0.45} fill="#111" />
+            {/* tall green hat */}
+            <Rect x={-4.6} y={-12.4} width={9.2} height={1.1} rx={0.4} fill="#14532d" stroke={OL} strokeWidth={0.3} />
+            <Path d="M-3,-12.4 L-2.4,-17.6 L2.4,-17.6 L3,-12.4 Z" fill={primary} stroke={OL} strokeWidth={0.35} />
+            <Rect x={-2.8} y={-14} width={5.6} height={1} fill="#111" />
+            <Rect x={-0.8} y={-14.2} width={1.6} height={1.4} fill="none" stroke={accent} strokeWidth={0.4} />
+            <Path d="M3,-15.6 C4.6,-16.6 5.4,-15 4.2,-14.4 C5.4,-13.6 4,-12.6 3.2,-13.6 Z" fill="#3bff8a" />
+          </G>
+        </G>
+      );
+    }
+    case 'snowman': {
+      const tt = motion.t == null ? 0.3 : motion.t;
+      const scarf = Math.sin(tt * 9) * 1.6;
+      const armW = Math.sin(tt * 4) * 6;
+      return (
+        <G>
+          <Defs>
+            <RadialGradient id="rs_snowman" cx="0.35" cy="0.3" r="0.8">
+              <Stop offset="0" stopColor="#ffffff" />
+              <Stop offset="1" stopColor="#bfe3ff" />
+            </RadialGradient>
+          </Defs>
+          <Path d="M-14,7 L13,7 Q16,6.8 16.2,5.2 L14,5.8 L-13,5.8 Q-14.8,5.8 -14,7 Z" fill="#1e3a8a" stroke={accent} strokeWidth={0.7} />
+          <G translateY={-bob * 0.5}>
+            <Circle cx={0} cy={1.2} r={5} fill="url(#rs_snowman)" stroke={OL} strokeWidth={0.5} />
+            <Circle cx={0} cy={-6} r={3.8} fill="url(#rs_snowman)" stroke={OL} strokeWidth={0.5} />
+            <Circle cx={0.4} cy={-6.8} r={0.5} fill="#111" />
+            <Circle cx={0.4} cy={-4.8} r={0.5} fill="#111" />
+            <Circle cx={0.4} cy={0.4} r={0.55} fill="#111" />
+            {/* twig arms */}
+            <G rotation={armW} originX={-3.2} originY={-6}>
+              <Path d="M-3.2,-6 L-9.6,-9 M-7.6,-8 L-8.6,-10.4" stroke="#6b3e1f" strokeWidth={0.8} strokeLinecap="round" />
+            </G>
+            <G rotation={-armW} originX={3.2} originY={-6}>
+              <Path d="M3.2,-6 L9.6,-8.6 M7.6,-7.8 L8.8,-10" stroke="#6b3e1f" strokeWidth={0.8} strokeLinecap="round" />
+            </G>
+            <Circle cx={0} cy={-12} r={3.1} fill="url(#rs_snowman)" stroke={OL} strokeWidth={0.5} />
+            <Circle cx={-0.6} cy={-12.6} r={0.45} fill="#111" />
+            <Circle cx={1.4} cy={-12.6} r={0.45} fill="#111" />
+            <Polygon points="1,-11.8 5.6,-11.2 1,-10.8" fill="#fb923c" stroke={OL} strokeWidth={0.25} />
+            <Path d="M-1.4,-10.4 Q0.4,-9.4 2,-10.4" stroke="#111" strokeWidth={0.35} fill="none" strokeDasharray="0.4 0.5" />
+            {/* scarf */}
+            <Path d="M-3.4,-9 Q0,-7.6 3.4,-9" stroke={primary} strokeWidth={1.6} fill="none" strokeLinecap="round" />
+            <Path d={`M-2.6,-8.6 L${-7 - scarf},${-8.6 + scarf * 0.4} L${-6.6 - scarf},${-7.2 + scarf * 0.4}`} stroke={primary} strokeWidth={1.3} fill="none" strokeLinecap="round" />
+            {/* top hat */}
+            <Rect x={-3.8} y={-15.2} width={7.6} height={1} rx={0.4} fill="#111827" stroke={OL} strokeWidth={0.3} />
+            <Rect x={-2.6} y={-19.4} width={5.2} height={4.4} rx={0.4} fill="#111827" stroke={OL} strokeWidth={0.3} />
+            <Rect x={-2.6} y={-16.4} width={5.2} height={0.9} fill={primary} />
+            <Circle cx={2} cy={-16} r={0.7} fill="#22c55e" />
+          </G>
+        </G>
+      );
+    }
     case 'danceskeleton': {
       // Time-driven dance (not distance-driven) so it keeps grooving even when slow or airborne.
       const tt = motion.t == null ? 0.32 : motion.t;
@@ -1830,6 +2626,37 @@ function LineRider() {
   const [rider, setRider] = useState(null);
   const [trail, setTrail] = useState([]);
   const [crashed, setCrashed] = useState(false);
+  const [dailyKey, setDailyKey] = useState(() => localDateKey());
+  const [trackCodeOut, setTrackCodeOut] = useState('');
+  const [trackCodeIn, setTrackCodeIn] = useState('');
+  const [trackCodeMsg, setTrackCodeMsg] = useState('');
+  const [dailyRuns, setDailyRuns] = useState({});
+  const [dailyBoard, setDailyBoard] = useState({ source: 'local', entries: [] });
+  const [dailyResult, setDailyResult] = useState(null);
+  const dailyLinesRef = useRef(null);
+  const canvasShotRef = useRef(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const shareRide = useCallback(async () => {
+    if (shareBusy) return;
+    setShareBusy(true);
+    try {
+      if (Platform.OS === 'web') {
+        await shareRideWeb(canvasShotRef.current);
+        return;
+      }
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('Sharing unavailable', 'This device cannot open the share sheet.');
+        return;
+      }
+      const uri = await captureRef(canvasShotRef, { format: 'png', quality: 1, result: 'tmpfile' });
+      await Sharing.shareAsync(uri, { mimeType: 'image/png', UTI: 'public.png', dialogTitle: 'Share your ride' });
+    } catch (err) {
+      Alert.alert('Share failed', err?.message || 'Could not share this ride.');
+    } finally {
+      setShareBusy(false);
+    }
+  }, [shareBusy]);
+  const dailyRunRef = useRef(null);
   const [crashReason, setCrashReason] = useState('wipeout');
   const [ownedRiders, setOwnedRiders] = useState(DEFAULT_OWNED_RIDERS);
   const [activeRiderId, setActiveRiderId] = useState('classic');
@@ -1882,6 +2709,8 @@ function LineRider() {
   const soundUnavailableRef = useRef(false);
   const crashSoundPlayedRef = useRef(false);
   const airStartedAtRef = useRef(null);
+  const stuntRef = useRef(newStuntState());
+  const [stunt, setStunt] = useState(() => newStuntState());
   const airYippeePlayedRef = useRef(false);
   const lastAirYippeeAtRef = useRef(0);
   const lastBoostSoundAtRef = useRef(0);
@@ -2245,6 +3074,33 @@ function LineRider() {
     setTrail([]);
     setCrashReason('wipeout');
     setCrashed(false);
+    setDailyResult(null);
+  }, []);
+
+  useEffect(() => {
+    getTrackStorage().getItem(DAILY_STORAGE_KEY).then((raw) => {
+      if (raw) setDailyRuns(JSON.parse(raw) || {});
+    }).catch(() => {});
+  }, []);
+  const todaysRuns = dailyRuns[dailyKey] || [];
+  const dailyCourse = dailyCourseFor(dailyKey);
+  const dailyBest = todaysRuns.length ? Math.min(...todaysRuns.map((r) => r.ms)) : null;
+  useEffect(() => {
+    let live = true;
+    fetchDailyLeaderboard(dailyKey, todaysRuns).then((b) => { if (live) setDailyBoard(b); });
+    return () => { live = false; };
+  }, [dailyKey, dailyRuns]);
+  const recordDailyRun = useCallback((run) => {
+    setDailyRuns((prev) => {
+      const runs = [...(prev[run.date] || []), { ms: run.ms, score: run.score, at: new Date().toISOString() }]
+        .sort((a, b) => a.ms - b.ms).slice(0, 10);
+      // keep the last 7 days only
+      const keys = Object.keys(prev).filter((k) => k !== run.date).sort().slice(-6);
+      const next = { [run.date]: runs };
+      keys.forEach((k) => { next[k] = prev[k]; });
+      getTrackStorage().setItem(DAILY_STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
   }, []);  const resetView = useCallback(() => {
     camRef.current = { x: 0, y: 0, zoom: 1 };
     setCam({ x: 0, y: 0, zoom: 1 });
@@ -2408,6 +3264,61 @@ function LineRider() {
     });
   }, [fitTrackInView, resetView, savedTrackSlots, stopPlay]);
 
+  const loadDailyChallenge = useCallback(() => {
+    const key = localDateKey();
+    setDailyKey(key);
+    const course = dailyCourseFor(key);
+    stopPlay();
+    const nextLines = JSON.parse(JSON.stringify(course.lines));
+    linesRef.current = nextLines;
+    dailyLinesRef.current = nextLines;
+    setLines(nextLines);
+    setSelectedLineIndex(null);
+    setCurrentStroke([]);
+    setTool('draw');
+    setShowDemoTracks(false);
+    requestAnimationFrame(() => {
+      resetView();
+      requestAnimationFrame(() => fitTrackInView());
+    });
+  }, [fitTrackInView, resetView, stopPlay]);
+
+  const exportTrackCode = useCallback(async () => {
+    if (!linesRef.current.length) { setTrackCodeMsg('Draw a track first.'); return; }
+    const code = encodeTrackCode(linesRef.current);
+    setTrackCodeOut(code);
+    try {
+      await Clipboard.setStringAsync(code);
+      setTrackCodeMsg(`Copied! ${code.length} characters.`);
+    } catch (e) {
+      setTrackCodeMsg('Select the code above and copy it.');
+    }
+  }, []);
+
+  const importTrackCode = useCallback(async (fromClipboard) => {
+    let code = trackCodeIn;
+    if (fromClipboard) {
+      try { code = await Clipboard.getStringAsync(); setTrackCodeIn(code); } catch (e) { code = ''; }
+    }
+    try {
+      const nextLines = decodeTrackCode(code);
+      stopPlay();
+      linesRef.current = nextLines;
+      setLines(nextLines);
+      setSelectedLineIndex(null);
+      setCurrentStroke([]);
+      setTool('draw');
+      setTrackCodeMsg(`Loaded ${nextLines.length} lines.`);
+      setShowDemoTracks(false);
+      requestAnimationFrame(() => {
+        resetView();
+        requestAnimationFrame(() => fitTrackInView());
+      });
+    } catch (e) {
+      setTrackCodeMsg(`Couldn't load that code: ${e.message}`);
+    }
+  }, [trackCodeIn, fitTrackInView, resetView, stopPlay]);
+
   const loadDemoTrack = useCallback((demoTrack) => {
     if (!demoTrack?.lines?.length) return;
     stopPlay();
@@ -2437,17 +3348,14 @@ function LineRider() {
 
     const unlockFromPurchases = (purchases) => {
       if (!mounted || !Array.isArray(purchases)) return;
-      const unlocked = purchases
-        .map((p) => riderIdFromProductId(p?.productId || p?.id))
-        .filter(Boolean);
-      const trails = purchases.map((p) => trailIdFromProductId(p?.productId || p?.id)).filter(Boolean);
+      const { riders: unlocked, trails } = unlocksFromPurchases(purchases);
       if (trails.length) setOwnedTrails((prev) => Array.from(new Set([...prev, ...trails])));
       if (!unlocked.length) return;
       setOwnedRiders((prev) => Array.from(new Set([...prev, ...unlocked])));
     };
 
     const initIap = async () => {
-      const paidSkus = [...RIDER_TYPES, ...TRAIL_TYPES].map((r) => r.productId).filter(Boolean);
+      const paidSkus = [...RIDER_TYPES, ...TRAIL_TYPES, HOLIDAY_BUNDLE].map((r) => r.productId).filter(Boolean);
       try {
         RNIap = getRiderStoreApi();
         if (!RNIap) throw new Error('In-app purchase module is unavailable.');
@@ -2481,6 +3389,11 @@ function LineRider() {
 
       purchaseSub = RNIap.purchaseUpdatedListener(async (purchase) => {
         const productId = purchase?.productId || purchase?.id;
+        if (productId === HOLIDAY_BUNDLE.productId) {
+          setOwnedRiders((prev) => Array.from(new Set([...prev, ...HOLIDAY_BUNDLE.riders])));
+          setOwnedTrails((prev) => Array.from(new Set([...prev, ...HOLIDAY_BUNDLE.trails])));
+          setPurchaseBusyId(null);
+        }
         const riderId = riderIdFromProductId(productId);
         const boughtTrail = trailIdFromProductId(productId);
         if (boughtTrail) {
@@ -2532,10 +3445,7 @@ function LineRider() {
         alsoPublishToEventListenerIOS: false,
         onlyIncludeActiveItemsIOS: true,
       });
-      const unlocked = purchases
-        .map((p) => riderIdFromProductId(p?.productId || p?.id))
-        .filter(Boolean);
-      const trails = purchases.map((p) => trailIdFromProductId(p?.productId || p?.id)).filter(Boolean);
+      const { riders: unlocked, trails } = unlocksFromPurchases(purchases);
       if (!unlocked.length && !trails.length) {
         Alert.alert('Restore Purchases', 'No prior purchases were found.');
         return;
@@ -2602,6 +3512,38 @@ function LineRider() {
       setPurchaseBusyId(null);
     }
   }, [ownedTrails, purchaseBusyId, storeReady]);
+
+  const holidayBundleOwned = HOLIDAY_BUNDLE.riders.every((id) => ownedRiders.includes(id))
+    && HOLIDAY_BUNDLE.trails.every((id) => ownedTrails.includes(id));
+
+  const purchaseHolidayBundle = useCallback(async () => {
+    if (holidayBundleOwned || purchaseBusyId) return;
+    if (Platform.OS === 'web') {
+      Alert.alert('Unlock in the app', `${HOLIDAY_BUNDLE.name} can be unlocked in the iOS app.`);
+      return;
+    }
+    if (!storeReady) {
+      Alert.alert('Store unavailable', 'In-app purchases are not ready yet. Try again in a moment.');
+      return;
+    }
+    setPurchaseBusyId(HOLIDAY_BUNDLE.productId);
+    try {
+      const RNIap = getRiderStoreApi();
+      if (!RNIap) throw new Error('In-app purchase module is unavailable.');
+      await RNIap.requestPurchase({
+        request: {
+          ios: { sku: HOLIDAY_BUNDLE.productId },
+          apple: { sku: HOLIDAY_BUNDLE.productId },
+          android: { skus: [HOLIDAY_BUNDLE.productId] },
+          google: { skus: [HOLIDAY_BUNDLE.productId] },
+        },
+        type: 'in-app',
+      });
+    } catch (err) {
+      Alert.alert('Purchase failed', err?.message || 'Could not complete purchase.');
+      setPurchaseBusyId(null);
+    }
+  }, [holidayBundleOwned, purchaseBusyId, storeReady]);
 
   const activateOrPurchaseRider = useCallback(async (riderId) => {
     const cfg = riderConfig(riderId);
@@ -2842,11 +3784,22 @@ function LineRider() {
     wasTouchingBoostRef.current = false;
     lastPortalFrameRef.current = -Infinity;
     prevOnGroundRef.current = false;
+    stuntRef.current = newStuntState();
+    setStunt(newStuntState());
     setCrashReason('wipeout');
     setCrashed(false);
     userZoomRef.current = 1;
     playLookRef.current = { x: 0, y: 0, held: false };
     camDropRef.current = 0;
+    setDailyResult(null);
+    if (dailyLinesRef.current && dailyLinesRef.current === lines) {
+      const solid = lines.filter((ln) => lineTypeConfig(lineType(ln)).collidable);
+      const maxX = Math.max(...solid.flatMap((ln) => linePoints(ln).map((pt) => pt.x)));
+      dailyRunRef.current = { date: localDateKey(), finishX: maxX - 120 };
+    } else {
+      dailyLinesRef.current = null;
+      dailyRunRef.current = null;
+    }
     setPlaying(true);
   }, [activeRiderId, lines, maybeShowPlayInterstitial]);
 
@@ -2993,6 +3946,16 @@ function LineRider() {
           airYippeePlayedRef.current = false;
         }
         prevOnGroundRef.current = grounded;
+        stepStunts(stuntRef.current, r, grounded, simFrameRef.current * SIM_DT_MS);
+        const daily = dailyRunRef.current;
+        if (daily && !r.crashed && r.x >= daily.finishX) {
+          r.finished = true;
+          const run = { date: daily.date, ms: Math.round(simFrameRef.current * SIM_DT_MS), score: stuntRef.current.score };
+          dailyRunRef.current = null;
+          setDailyResult(run);
+          recordDailyRun(run);
+          playSfx('air');
+        }
 
         const collidableBounds = getCollidableBounds(linesRef.current);
         const hasTrackBelow = hasReachableTrackBelow(linesRef.current, r);
@@ -3051,13 +4014,13 @@ function LineRider() {
       accumulator += frameMs;
       let steps = 0;
       while (accumulator >= SIM_DT_MS && steps < MAX_SIM_STEPS_PER_FRAME) {
-        if (!r.crashed) simulateStep(r);
+        if (!r.crashed && !r.finished) simulateStep(r);
         accumulator -= SIM_DT_MS;
         steps++;
       }
       if (steps >= MAX_SIM_STEPS_PER_FRAME) accumulator = 0;
 
-      if (!r.crashed) {
+      if (!r.crashed && !r.finished) {
         // Camera follow: dt-based exponential smoothing toward rider + velocity lead, zoomed in.
         const dtSec = frameMs / 1000;
         const c = camRef.current;
@@ -3116,6 +4079,8 @@ function LineRider() {
         setRider(riderRef.current ? { ...riderRef.current } : null);
         setTrail([...trailRef.current]);
         setCam({ ...camRef.current });
+        const st = stuntRef.current;
+        setStunt({ score: st.score, combo: st.combo, best: st.best, popups: st.popups.slice(), t: simFrameRef.current * SIM_DT_MS });
       }
       animRef.current = requestAnimationFrame(tick);
     };
@@ -3123,7 +4088,7 @@ function LineRider() {
     simFrameRef.current = 0;
     animRef.current = requestAnimationFrame(tick);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [activeRiderId, canvasSize.height, canvasSize.width, playSfx, playing]);
+  }, [activeRiderId, canvasSize.height, canvasSize.width, playSfx, playing, recordDailyRun]);
 
 
   /* ══════════ DERIVED ══════════ */
@@ -3179,7 +4144,7 @@ function LineRider() {
     sway: Math.cos(motionPhase * 0.9) * 1.1 * motionAmp * motionCfg.sway,
     suspension: Math.max(0, Math.sin(motionPhase * 1.35)) * 1.4 * motionAmp * motionCfg.suspension,
     airTilt: rider?.onGround ? 0 : Math.sin(motionPhase * 0.8) * 1.2 * motionCfg.airTilt,
-    t: currentRiderCfg.dances ? Date.now() / 1000 : undefined,
+    t: (currentRiderCfg.dances || currentRiderCfg.animated) ? Date.now() / 1000 : undefined,
   };
 
   return (
@@ -3350,11 +4315,12 @@ function LineRider() {
             }
           }}
         >
+          <View ref={canvasShotRef} collapsable={false} style={StyleSheet.absoluteFill}>
           <Svg width={canvasSize.width} height={canvasSize.height} style={StyleSheet.absoluteFill}>
             <Defs>
               <LinearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor={HALLOWEEN_ACTIVE ? '#12051f' : '#0a0a1a'} />
-                <Stop offset="1" stopColor={HALLOWEEN_ACTIVE ? '#2c0f45' : '#1a1a2e'} />
+                <Stop offset="0" stopColor={HALLOWEEN_ACTIVE ? '#12051f' : THANKSGIVING_ACTIVE ? '#1a0c06' : NEWYEAR_ACTIVE ? '#05031a' : CHRISTMAS_ACTIVE ? '#030b24' : VALENTINE_ACTIVE ? '#1f0614' : STPATRICK_ACTIVE ? '#03140a' : '#0a0a1a'} />
+                <Stop offset="1" stopColor={HALLOWEEN_ACTIVE ? '#2c0f45' : THANKSGIVING_ACTIVE ? '#4a1d0c' : NEWYEAR_ACTIVE ? '#1c1440' : CHRISTMAS_ACTIVE ? '#0f2a52' : VALENTINE_ACTIVE ? '#4a0f2e' : STPATRICK_ACTIVE ? '#0c3a1e' : '#1a1a2e'} />
               </LinearGradient>
               <RadialGradient id="portalHaze" cx="50%" cy="50%" r="50%">
                 <Stop offset="0" stopColor="#12001d" stopOpacity="0.92" />
@@ -3380,6 +4346,77 @@ function LineRider() {
               </G>
             )}
 
+            {!HALLOWEEN_ACTIVE && THANKSGIVING_ACTIVE && (
+              <G>
+                {/* Thanksgiving sky: harvest moon, drifting leaves, distant hills. */}
+                <Circle cx={canvasSize.width - 74} cy={92} r={70} fill="#ffb347" opacity={0.1} />
+                <Circle cx={canvasSize.width - 74} cy={92} r={42} fill="#ffb347" opacity={0.9} />
+                <Circle cx={canvasSize.width - 86} cy={84} r={6} fill="#e8913a" opacity={0.6} />
+                <Circle cx={canvasSize.width - 62} cy={104} r={4.5} fill="#e8913a" opacity={0.5} />
+                <Path d={`M0,${canvasSize.height} L0,${canvasSize.height * 0.82} Q${canvasSize.width * 0.25},${canvasSize.height * 0.74} ${canvasSize.width * 0.5},${canvasSize.height * 0.8} T${canvasSize.width},${canvasSize.height * 0.76} L${canvasSize.width},${canvasSize.height} Z`} fill="#2a1008" opacity={0.7} />
+                {[[0.08, 0.12, 0], [0.24, 0.3, 1], [0.4, 0.1, 2], [0.56, 0.38, 3], [0.7, 0.2, 4], [0.86, 0.5, 0], [0.16, 0.56, 2], [0.48, 0.62, 1], [0.32, 0.2, 3], [0.64, 0.66, 4]].map(([fx, fy, c], k) => (
+                  <Path key={k} transform={`translate(${fx * canvasSize.width},${fy * canvasSize.height}) rotate(${k * 37})`}
+                    d="M0,-6 Q5,-1 0,6 Q-5,-1 0,-6 Z" fill={['#ff7a1e', '#ffb02e', '#d9481c', '#ffd23b', '#a3471a'][c]} opacity={0.55} />
+                ))}
+              </G>
+            )}
+            {!HALLOWEEN_ACTIVE && CHRISTMAS_ACTIVE && (
+              <G>
+                {/* Christmas sky: string lights, snowfall, snowy hills. */}
+                <Path d={`M0,102 Q${canvasSize.width * 0.25},132 ${canvasSize.width * 0.5},102 T${canvasSize.width},102`} stroke="#1f5a2e" strokeWidth={1.6} fill="none" />
+                {Array.from({ length: 14 }).map((_, k) => {
+                  const fx = (k + 0.5) / 14; const x = fx * canvasSize.width;
+                  const y = 106 + Math.sin(fx * Math.PI * 2) * 15;
+                  const c = ['#ff3b3b', '#3bff8a', '#ffd23b', '#3bd8ff'][k % 4];
+                  return (
+                    <G key={k}>
+                      <Circle cx={x} cy={y} r={9} fill={c} opacity={0.18} />
+                      <Ellipse cx={x} cy={y} rx={3} ry={4.2} fill={c} opacity={0.95} />
+                    </G>
+                  );
+                })}
+                {Array.from({ length: 40 }).map((_, k) => {
+                  const h1 = trailHash(k * 13.1); const h2 = trailHash(k * 7.7);
+                  return <Circle key={`s${k}`} cx={h1 * canvasSize.width} cy={60 + h2 * (canvasSize.height - 60)} r={k % 4 === 0 ? 2.2 : 1.3} fill="#ffffff" opacity={0.6} />;
+                })}
+                <Path d={`M0,${canvasSize.height} L0,${canvasSize.height * 0.84} Q${canvasSize.width * 0.3},${canvasSize.height * 0.76} ${canvasSize.width * 0.55},${canvasSize.height * 0.83} T${canvasSize.width},${canvasSize.height * 0.79} L${canvasSize.width},${canvasSize.height} Z`} fill="#dbeeff" opacity={0.18} />
+              </G>
+            )}
+            {NEWYEAR_ACTIVE && (
+              <G>
+                {/* New Year sky: static firework bursts. */}
+                {[[0.18, 0.2, '#ffd23b'], [0.72, 0.16, '#ff4fd8'], [0.46, 0.34, '#3bd8ff'], [0.86, 0.42, '#3bff8a']].map(([fx, fy, c], k) => (
+                  <G key={`ny${k}`} opacity={0.55}>
+                    {Array.from({ length: 12 }).map((_, r) => {
+                      const a = (r / 12) * Math.PI * 2; const cx = fx * canvasSize.width; const cy = fy * canvasSize.height;
+                      return <Line key={r} x1={cx + Math.cos(a) * 8} y1={cy + Math.sin(a) * 8} x2={cx + Math.cos(a) * 26} y2={cy + Math.sin(a) * 26} stroke={c} strokeWidth={1.6} strokeLinecap="round" />;
+                    })}
+                  </G>
+                ))}
+              </G>
+            )}
+            {VALENTINE_ACTIVE && (
+              <G>
+                {[[0.1, 0.3], [0.3, 0.18], [0.55, 0.4], [0.78, 0.26], [0.9, 0.55], [0.22, 0.6], [0.65, 0.68]].map(([fx, fy], k) => (
+                  <Path key={`v${k}`} transform={`translate(${fx * canvasSize.width},${fy * canvasSize.height}) scale(${0.8 + (k % 3) * 0.3})`}
+                    d="M0,6 C-9,0 -7,-8 0,-3 C7,-8 9,0 0,6 Z" fill={k % 2 ? '#ff4f8b' : '#ff9cc2'} opacity={0.35} />
+                ))}
+              </G>
+            )}
+            {STPATRICK_ACTIVE && (
+              <G>
+                {[[0.12, 0.28], [0.36, 0.16], [0.6, 0.38], [0.84, 0.22], [0.24, 0.58], [0.74, 0.62]].map(([fx, fy], k) => (
+                  <G key={`p${k}`} transform={`translate(${fx * canvasSize.width},${fy * canvasSize.height}) rotate(${k * 41})`} opacity={0.32}>
+                    {[0, 120, 240].map((d) => (
+                      <G key={d} rotation={d}>
+                        <Circle cx={-3.6} cy={-7} r={4.4} fill="#3bff8a" />
+                        <Circle cx={3.6} cy={-7} r={4.4} fill="#3bff8a" />
+                      </G>
+                    ))}
+                  </G>
+                ))}
+              </G>
+            )}
             <G translateX={cam.x} translateY={cam.y} scale={cam.zoom}>
               {/* Track */}
               {lines.map((line, idx) => {
@@ -3561,7 +4598,16 @@ function LineRider() {
                 </G>
               )}
             </G>
+            {rider && (rider.crashed || rider.finished || crashed || dailyResult) && (
+              <G>
+                <SvgText x={14} y={30} fill="#ff4fd8" fontSize={16} fontWeight="900" letterSpacing={2}>SKETCH RIDER</SvgText>
+                <SvgText x={14} y={50} fill="#ffffff" fontSize={13} fontWeight="700">
+                  {`${currentRiderCfg.name}${stunt.score ? ` · ★ ${stunt.score}` : ''}${dailyResult ? ` · DAILY ${formatRunTime(dailyResult.ms)}` : ''}`}
+                </SvgText>
+              </G>
+            )}
           </Svg>
+          </View>
 
           {/* Top controls overlay */}
           <View style={s.topCanvasRow}>
@@ -3685,13 +4731,56 @@ function LineRider() {
             </View>
           )}
 
+          {/* Daily challenge timer + finish */}
+          {playing && dailyRunRef.current && !dailyResult && (
+            <View style={s.dailyTimer} pointerEvents="none">
+              <Text style={s.dailyTimerText}>⏱ DAILY · {formatRunTime((stunt.t || 0))}</Text>
+            </View>
+          )}
+          {dailyResult && (
+            <View style={s.crashOverlay}>
+              <Text style={s.dailyFinishText}>FINISH!</Text>
+              <Text style={s.stuntFinal}>{formatRunTime(dailyResult.ms)}{dailyBest != null && dailyResult.ms <= dailyBest ? '  ★ NEW BEST' : ''}</Text>
+              {dailyResult.score > 0 && <Text style={s.dailySub}>Stunt score {dailyResult.score}</Text>}
+              {dailyBest != null && <Text style={s.dailySub}>Today's best {formatRunTime(dailyBest)}</Text>}
+              <TouchableOpacity onPress={stopPlay} style={[s.retryBtn, { borderColor: '#00ffc8' }]}>
+                <Text style={[s.retryText, { color: '#00ffc8' }]}>RIDE AGAIN</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={shareRide} style={[s.retryBtn, s.shareBtn]} disabled={shareBusy} accessibilityLabel="Share your ride">
+                <Text style={[s.retryText, { color: '#ffe14f' }]}>{shareBusy ? 'SHARING…' : '📤 SHARE RIDE'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Crash overlay */}
           {crashed && (
             <View style={s.crashOverlay}>
               <Text style={s.crashText}>{crashReason === 'stalled' ? 'STALLED OUT!' : 'WIPEOUT!'}</Text>
+              {stunt.score > 0 && <Text style={s.stuntFinal}>STUNT SCORE {stunt.score}</Text>}
               <TouchableOpacity onPress={stopPlay} style={s.retryBtn}>
                 <Text style={s.retryText}>TRY AGAIN</Text>
               </TouchableOpacity>
+              <TouchableOpacity onPress={shareRide} style={[s.retryBtn, s.shareBtn]} disabled={shareBusy} accessibilityLabel="Share your ride">
+                <Text style={[s.retryText, { color: '#ffe14f' }]}>{shareBusy ? 'SHARING…' : '📤 SHARE RIDE'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Stunt score + combo popups */}
+          {playing && (stunt.score > 0 || stunt.popups?.length > 0) && (
+            <View style={s.stuntWrap} pointerEvents="none">
+              <Text style={s.stuntScore}>★ {stunt.score}</Text>
+              {(stunt.popups || []).map((pp) => {
+                const age = Math.max(0, (stunt.t || 0) - pp.born) / STUNT_POPUP_MS;
+                return (
+                  <Text
+                    key={pp.id}
+                    style={[s.stuntPopup, { color: pp.color, textShadowColor: pp.color, opacity: 1 - age * age, transform: [{ translateY: -age * 18 }, { scale: 1 + (1 - Math.min(1, age * 4)) * 0.25 }] }]}
+                  >
+                    {pp.text}
+                  </Text>
+                );
+              })}
             </View>
           )}
 
@@ -3784,6 +4873,51 @@ function LineRider() {
             </View>
 
             <ScrollView contentContainerStyle={s.shopList}>
+              <View style={s.dailyCard}>
+                <View style={s.demoHeaderRow}>
+                  <Text style={s.dailyTitle}>★ DAILY CHALLENGE</Text>
+                  <Text style={s.demoDifficulty}>{dailyKey}</Text>
+                </View>
+                <Text style={s.demoTitle}>{dailyCourse.name}</Text>
+                <Text style={s.demoSubline}>New course every day · reach the flag as fast as you can</Text>
+                <Text style={s.dailyBest}>Your best today: {dailyBest != null ? formatRunTime(dailyBest) : '—'}</Text>
+                <Text style={s.dailyBoardHead}>LEADERBOARD {dailyBoard.source === 'local' ? '· this device (offline)' : ''}</Text>
+                {dailyBoard.entries.length ? dailyBoard.entries.slice(0, 5).map((e, idx) => (
+                  <Text key={`lb-${idx}`} style={s.dailyBoardRow}>{idx + 1}. {e.name}  {formatRunTime(e.ms)}{e.score ? `  ★${e.score}` : ''}</Text>
+                )) : <Text style={s.dailyBoardRow}>No runs yet. Be the first!</Text>}
+                <TouchableOpacity style={[s.demoLoadBtn, { alignSelf: 'flex-start', marginTop: 8 }]} onPress={loadDailyChallenge}>
+                  <Text style={s.demoLoadBtnText}>Load today's course</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={s.codeCard}>
+                <Text style={s.codeTitle}>TRACK CODES</Text>
+                <Text style={s.demoSubline}>Share your drawing as text, or paste a friend's code to ride it.</Text>
+                <TouchableOpacity style={[s.demoLoadBtn, { alignSelf: 'flex-start', marginTop: 6 }]} onPress={exportTrackCode} accessibilityLabel="Copy my track code">
+                  <Text style={s.demoLoadBtnText}>Copy my track code</Text>
+                </TouchableOpacity>
+                {!!trackCodeOut && (
+                  <TextInput style={s.codeBox} value={trackCodeOut} editable={false} selectTextOnFocus multiline numberOfLines={2} accessibilityLabel="My track code" />
+                )}
+                <TextInput
+                  style={s.codeBox}
+                  value={trackCodeIn}
+                  onChangeText={setTrackCodeIn}
+                  placeholder="Paste a code (SR1.…)"
+                  placeholderTextColor="#6f7f9c"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  accessibilityLabel="Paste track code"
+                />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity style={s.demoLoadBtn} onPress={() => importTrackCode(false)} accessibilityLabel="Load track code">
+                    <Text style={s.demoLoadBtnText}>Load code</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={s.demoLoadBtn} onPress={() => importTrackCode(true)}>
+                    <Text style={s.demoLoadBtnText}>Paste & load</Text>
+                  </TouchableOpacity>
+                </View>
+                {!!trackCodeMsg && <Text style={s.dailyBoardRow}>{trackCodeMsg}</Text>}
+              </View>
               {demoTracks.map((demoTrack) => {
                 const previewPaths = buildPreviewPaths(demoTrack.lines, 120, 70, 8);
                 const recommended = riderConfig(demoTrack.recommendedRiderId).name;
@@ -3906,6 +5040,24 @@ function LineRider() {
                 ))}
               </View>
 
+              <TouchableOpacity
+                style={[s.bundleCard, holidayBundleOwned && { opacity: 0.7 }]}
+                onPress={purchaseHolidayBundle}
+                disabled={holidayBundleOwned}
+                accessibilityLabel="Holiday bundle"
+              >
+                <Text style={s.bundleIcon}>🎁</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.bundleTitle}>HOLIDAY BUNDLE</Text>
+                  <Text style={s.bundleSub}>5 Thanksgiving & Christmas riders + 4 trails · save $5.92</Text>
+                </View>
+                <View style={s.bundlePrice}>
+                  <Text style={s.bundlePriceText}>
+                    {holidayBundleOwned ? 'OWNED' : (purchaseBusyId === HOLIDAY_BUNDLE.productId ? '…' : (storePrices[HOLIDAY_BUNDLE.productId] || HOLIDAY_BUNDLE.priceLabel))}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
               {charTab === 'trails' ? (
               <ScrollView contentContainerStyle={s.charGrid}>
                 {TRAIL_TYPES.map((tt) => {
@@ -3932,14 +5084,14 @@ function LineRider() {
                         {!owned && (
                           <View style={s.charLockBadge}><Text style={s.charLockIcon}>🔒</Text></View>
                         )}
-                        {tt.seasonal === 'halloween' && (
-                          <View style={s.charEventBadge}><Text style={s.charEventText}>🎃</Text></View>
+                        {!!EVENT_BADGE[tt.seasonal] && (
+                          <View style={s.charEventBadge}><Text style={s.charEventText}>{EVENT_BADGE[tt.seasonal]}</Text></View>
                         )}
                       </View>
                       <Text style={[s.charName, active && { color: tt.color }]} numberOfLines={1}>{tt.icon} {tt.name}</Text>
                       <View style={[s.charPill, active ? { backgroundColor: tt.color } : (owned ? s.charPillOwned : s.charPillLocked)]}>
                         <Text style={[s.charPillText, active && { color: '#0a0a1a' }, !owned && { color: '#ffd23b' }]}>
-                          {active ? 'SELECTED' : (owned ? (tt.priceUsd > 0 && tt.seasonal && HALLOWEEN_ACTIVE ? 'FREE · EVENT' : 'USE') : (busy ? '…' : price))}
+                          {active ? 'SELECTED' : (owned ? (tt.priceUsd > 0 && isEventFree(tt.seasonal) ? 'FREE · EVENT' : 'USE') : (busy ? '…' : price))}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -3982,8 +5134,8 @@ function LineRider() {
                             <Text style={s.charLockIcon}>🔒</Text>
                           </View>
                         )}
-                        {rt.seasonal === 'halloween' && (
-                          <View style={s.charEventBadge}><Text style={s.charEventText}>🎃</Text></View>
+                        {!!EVENT_BADGE[rt.seasonal] && (
+                          <View style={s.charEventBadge}><Text style={s.charEventText}>{EVENT_BADGE[rt.seasonal]}</Text></View>
                         )}
                       </View>
                       <Text style={[s.charName, active && { color: rt.color }]} numberOfLines={1}>{rt.name}</Text>
@@ -4155,6 +5307,29 @@ const s = StyleSheet.create({
   retryBtn: { paddingHorizontal: 22, paddingVertical: 8, borderRadius: 8,
     borderWidth: 1.5, borderColor: '#ff3366', backgroundColor: 'rgba(255,51,102,0.2)' },
   retryText: { color: '#ff3366', fontWeight: '700', fontSize: 13 },
+  shareBtn: { marginTop: 10, borderColor: '#ffe14f' },
+  bundleCard: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 6, marginBottom: 8, padding: 10, borderRadius: 14, borderWidth: 1.5, borderColor: '#ffd23b', backgroundColor: 'rgba(214,31,44,0.22)' },
+  bundleIcon: { fontSize: 26 },
+  bundleTitle: { color: '#ffd23b', fontSize: 13, fontWeight: '900', letterSpacing: 1.4 },
+  bundleSub: { color: '#f4e9d6', fontSize: 10.5, fontWeight: '600', marginTop: 2 },
+  bundlePrice: { borderRadius: 999, borderWidth: 1, borderColor: '#ffd23b', paddingHorizontal: 10, paddingVertical: 4, backgroundColor: 'rgba(0,0,0,0.35)' },
+  bundlePriceText: { color: '#ffd23b', fontSize: 12, fontWeight: '900' },
+  codeCard: { borderRadius: 12, borderWidth: 1.5, borderColor: '#2bf0d4', backgroundColor: 'rgba(43,240,212,0.06)', padding: 12, gap: 6 },
+  codeTitle: { color: '#2bf0d4', fontSize: 13, fontWeight: '900', letterSpacing: 1.5 },
+  codeBox: { borderWidth: 1, borderColor: 'rgba(124,226,255,0.35)', borderRadius: 8, color: '#dff7ff', fontSize: 11, paddingHorizontal: 8, paddingVertical: 6, backgroundColor: 'rgba(0,0,0,0.3)', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  dailyCard: { borderRadius: 12, borderWidth: 1.5, borderColor: '#ff4fd8', backgroundColor: 'rgba(255,79,216,0.08)', padding: 12, gap: 3 },
+  dailyTitle: { color: '#ff4fd8', fontSize: 12, fontWeight: '900', letterSpacing: 2 },
+  dailyBest: { color: '#ffe14f', fontSize: 12, fontWeight: '800', marginTop: 4 },
+  dailyBoardHead: { color: 'rgba(223,247,255,0.55)', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginTop: 6 },
+  dailyBoardRow: { color: '#dff7ff', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  dailyTimer: { position: 'absolute', bottom: 34, left: 10 },
+  dailyTimerText: { color: '#ff4fd8', fontSize: 13, fontWeight: '900', letterSpacing: 1.5 },
+  dailyFinishText: { fontSize: 30, color: '#00ffc8', fontWeight: '900', letterSpacing: 4, marginBottom: 8, textShadowColor: '#00ffc8', textShadowRadius: 14, textShadowOffset: { width: 0, height: 0 } },
+  dailySub: { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginBottom: 6 },
+  stuntWrap: { position: 'absolute', top: 64, left: 0, right: 0, alignItems: 'center' },
+  stuntScore: { fontSize: 22, fontWeight: '900', color: '#ffffff', letterSpacing: 2, textShadowColor: '#ff4fd8', textShadowRadius: 12, textShadowOffset: { width: 0, height: 0 } },
+  stuntPopup: { marginTop: 4, fontSize: 17, fontWeight: '900', letterSpacing: 1.5, textShadowRadius: 10, textShadowOffset: { width: 0, height: 0 } },
+  stuntFinal: { fontSize: 16, fontWeight: '900', color: '#ffe14f', letterSpacing: 2, marginBottom: 12, textShadowColor: '#ffe14f', textShadowRadius: 10, textShadowOffset: { width: 0, height: 0 } },
   hud: { position: 'absolute', bottom: 10, left: 10, flexDirection: 'row', gap: 12 },
   hudText: { fontSize: 11, color: 'rgba(255,255,255,0.4)',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },

@@ -13,15 +13,18 @@
     "expo": "^52.0.0",
     "expo-asset": "~11.0.5",
     "expo-av": "~15.0.2",
+    "expo-clipboard": "~7.0.1",
     "expo-constants": "~17.0.8",
     "expo-file-system": "~18.0.12",
+    "expo-sharing": "~13.0.1",
     "react": "18.3.1",
     "react-native": "0.76.7",
     "react-native-gesture-handler": "~2.20.2",
     "react-native-google-mobile-ads": "^15.8.3",
     "react-native-iap": "^14.7.20",
     "react-native-nitro-modules": "^0.35.3",
-    "react-native-svg": "15.15.4"
+    "react-native-svg": "15.15.4",
+    "react-native-view-shot": "~4.0.3"
   },
   "devDependencies": {
     "@babel/core": "^7.22.9"
