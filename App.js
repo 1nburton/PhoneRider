@@ -135,8 +135,16 @@ const TRAMPOLINE_MIN_LAUNCH = 10;
 const TRACK_SAVE_STORAGE_KEY = 'phone-rider-track-slots-v1';
 const TRACK_SAVE_SLOT_COUNT = 3;
 const AD_PLAY_COUNT_STORAGE_KEY = 'phone-rider-ad-play-count-v1';
-const AD_PLAY_FREQUENCY = 5;
-const AD_LOAD_WAIT_MS = 2800;
+const AD_LAST_SHOWN_STORAGE_KEY = 'phone-rider-ad-last-shown-v1';
+const AD_PLAY_FREQUENCY = 8;
+// Owners of any paid rider/trail (incl. the Holiday Bundle) see ads half as often.
+const AD_PLAY_FREQUENCY_PAID = 16;
+// Never show an ad on a player's first few plays.
+const AD_FREE_FIRST_PLAYS = 3;
+// Minimum gap between interstitials.
+const AD_MIN_INTERVAL_MS = 3 * 60 * 1000;
+// Skip the ad (instead of stalling Play) if one isn't ready quickly.
+const AD_LOAD_WAIT_MS = 800;
 const AD_LOAD_POLL_MS = 120;
 const ADMOB_TEST_INTERSTITIAL_IDS = {
   ios: 'ca-app-pub-3940256099942544/4411468910',
@@ -2718,6 +2726,8 @@ function LineRider() {
   const lastPortalFrameRef = useRef(-Infinity);
   const prevOnGroundRef = useRef(false);
   const adPlayCountRef = useRef(0);
+  const adLastShownRef = useRef(0);
+  const ownsPaidItemRef = useRef(false);
   const adGateBusyRef = useRef(false);
   const adsInitializedRef = useRef(false);
   const adsUnavailableRef = useRef(false);
@@ -2758,6 +2768,8 @@ function LineRider() {
         if (mounted && Number.isFinite(parsed) && parsed >= 0) {
           adPlayCountRef.current = parsed;
         }
+        const lastRaw = Number.parseInt(await storage.getItem(AD_LAST_SHOWN_STORAGE_KEY), 10);
+        if (mounted && Number.isFinite(lastRaw) && lastRaw > 0) adLastShownRef.current = lastRaw;
       } catch (_) {
         adPlayCountRef.current = 0;
       }
@@ -2987,7 +2999,9 @@ function LineRider() {
     adPlayCountRef.current = nextPlayCount;
     persistAdPlayCount(nextPlayCount);
 
-    if (nextPlayCount % AD_PLAY_FREQUENCY !== 0) {
+    const frequency = ownsPaidItemRef.current ? AD_PLAY_FREQUENCY_PAID : AD_PLAY_FREQUENCY;
+    const cooledDown = Date.now() - adLastShownRef.current >= AD_MIN_INTERVAL_MS;
+    if (nextPlayCount <= AD_FREE_FIRST_PLAYS || nextPlayCount % frequency !== 0 || !cooledDown) {
       loadPlayInterstitial();
       return;
     }
@@ -2995,6 +3009,9 @@ function LineRider() {
     const canUseAds = await loadPlayInterstitial();
     const isLoaded = interstitialLoadedRef.current || await waitForInterstitialLoaded();
     if (!canUseAds || !isLoaded || !interstitialAdRef.current) return;
+
+    adLastShownRef.current = Date.now();
+    try { getTrackStorage().setItem(AD_LAST_SHOWN_STORAGE_KEY, String(adLastShownRef.current)); } catch (_) {}
 
     await new Promise((resolve) => {
       pendingAdCloseResolverRef.current = resolve;
@@ -3512,6 +3529,9 @@ function LineRider() {
       setPurchaseBusyId(null);
     }
   }, [ownedTrails, purchaseBusyId, storeReady]);
+
+  ownsPaidItemRef.current = RIDER_TYPES.some((r) => r.productId && ownedRiders.includes(r.id))
+    || TRAIL_TYPES.some((t) => t.productId && ownedTrails.includes(t.id));
 
   const holidayBundleOwned = HOLIDAY_BUNDLE.riders.every((id) => ownedRiders.includes(id))
     && HOLIDAY_BUNDLE.trails.every((id) => ownedTrails.includes(id));
